@@ -794,15 +794,196 @@ function fileToBase64(file) {
   });
 }
 
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+/*
+  根据当前 ASCII 网格计算导出视频的合适分辨率。
+  ASCII 实际只采样 columns × rows 个像素，
+  导出视频取约 2 倍采样分辨率以保证效果，
+  并限制上限避免过大。
+*/
+function computeTargetSize() {
+  const scale = 2;
+  let w = Math.round(columns * scale);
+  let h = Math.round(rows * scale);
+  w = Math.max(2, w - (w % 2));
+  h = Math.max(2, h - (h % 2));
+  const maxDim = 1280;
+  if (w > maxDim || h > maxDim) {
+    const r = Math.min(maxDim / w, maxDim / h);
+    w = Math.max(2, Math.round((w * r) / 2) * 2);
+    h = Math.max(2, Math.round((h * r) / 2) * 2);
+  }
+  return { w, h };
+}
+
+/*
+  在浏览器端把视频重编码为轻量版本：
+  - 分辨率降到 ASCII 采样需求（略高）
+  - 彻底去除音频（只录 canvas 画面流）
+  - 帧率用当前 ASCII 渲染帧率
+  - 按分辨率估算码率
+  返回 { blob, targetW, targetH, fps, mime }，失败返回 null。
+*/
+async function optimizeVideo(onProgress) {
+  if (!video.videoWidth || !video.duration) return null;
+  if (!window.MediaRecorder || !HTMLCanvasElement.prototype.captureStream) return null;
+  const mime = pickMime();
+  if (!mime) return null;
+
+  const target = computeTargetSize();
+  const targetW = target.w;
+  const targetH = target.h;
+  const fps = config.fps;
+  const bitrate = Math.min(
+    Math.max(targetW * targetH * fps * 0.12, 200000),
+    2500000
+  );
+
+  const oc = document.createElement("canvas");
+  oc.width = targetW;
+  oc.height = targetH;
+  const octx = oc.getContext("2d");
+
+  const stream = oc.captureStream(fps);
+  const recorder = new MediaRecorder(stream, {
+    mimeType: mime,
+    videoBitsPerSecond: bitrate
+  });
+  const chunks = [];
+  recorder.ondataavailable = e => {
+    if (e.data && e.data.size) chunks.push(e.data);
+  };
+  const stopped = new Promise(r => { recorder.onstop = r; });
+
+  const duration = Math.min(video.duration, 30);
+  const savedLoop = video.loop;
+  const savedTime = video.currentTime;
+
+  try {
+    video.pause();
+    video.loop = false;
+    video.currentTime = 0;
+    await new Promise(r => {
+      const h = () => { video.removeEventListener("seeked", h); r(); };
+      video.addEventListener("seeked", h);
+      setTimeout(r, 1200);
+    });
+
+    recorder.start(100);
+
+    await new Promise(resolve => {
+      let raf = null;
+      const tick = () => {
+        octx.drawImage(video, 0, 0, targetW, targetH);
+        if (onProgress) onProgress(Math.min(video.currentTime / duration, 1));
+        if (video.ended) { resolve(); return; }
+        raf = requestAnimationFrame(tick);
+      };
+      video.onended = () => {
+        if (raf) cancelAnimationFrame(raf);
+        resolve();
+      };
+      setTimeout(() => {
+        if (raf) cancelAnimationFrame(raf);
+        resolve();
+      }, (duration + 6) * 1000);
+      video.play().then(() => {
+        raf = requestAnimationFrame(tick);
+      }).catch(() => resolve());
+    });
+
+    await new Promise(r => setTimeout(r, 250));
+    if (recorder.state === "recording") recorder.stop();
+    await stopped;
+  } finally {
+    stream.getTracks().forEach(t => t.stop());
+    video.loop = savedLoop;
+    try { video.currentTime = savedTime; } catch (e) {}
+  }
+
+  if (!chunks.length) return null;
+  const blob = new Blob(chunks, { type: mime });
+  return { blob, targetW, targetH, fps, mime };
+}
+
+/*
+  把图片降采样到 ASCII 采样需求分辨率并重新编码。
+  返回 dataURL，失败返回 null。
+*/
+function optimizeImage() {
+  const iw = image.naturalWidth;
+  const ih = image.naturalHeight;
+  if (!iw || !ih) return null;
+  const scale = 2;
+  let w = Math.round(columns * scale);
+  let h = Math.round(rows * scale);
+  const maxDim = 1600;
+  if (w > maxDim || h > maxDim) {
+    const r = Math.min(maxDim / w, maxDim / h);
+    w = Math.round(w * r);
+    h = Math.round(h * r);
+  }
+  const oc = document.createElement("canvas");
+  oc.width = w;
+  oc.height = h;
+  const octx = oc.getContext("2d");
+  octx.drawImage(image, 0, 0, w, h);
+  const isPng = mediaFile.type === "image/png";
+  return isPng
+    ? oc.toDataURL("image/png")
+    : oc.toDataURL("image/jpeg", 0.85);
+}
+
+/*
+  轻量 minify：只删 HTML 注释、合并多余空行。
+  不碰 <script> 里的 base64 数据，避免破坏。
+*/
+function minifyHtml(html) {
+  html = html.replace(/<!--[\s\S]*?-->/g, "");
+  html = html.replace(/\n\s*\n/g, "\n");
+  return html;
+}
+
 async function exportCode() {
   if (!mediaReady) return;
   const btn = document.getElementById("btn-export");
-  btn.textContent = "导出中…";
+  const origText = btn.textContent;
   btn.disabled = true;
+  let mediaData, mediaMime;
   try {
-    const mediaData = await fileToBase64(mediaFile);
-    const mediaMime = mediaFile.type;
-    const html = buildExportHtml(mediaData, mediaMime);
+    if (mediaType === "video") {
+      btn.textContent = "优化视频 0%";
+      const result = await optimizeVideo(p => {
+        btn.textContent = "优化视频 " + Math.round(p * 100) + "%";
+      });
+      if (result) {
+        mediaData = await blobToDataUrl(result.blob);
+        mediaMime = result.mime;
+      } else {
+        mediaData = await fileToBase64(mediaFile);
+        mediaMime = mediaFile.type;
+      }
+    } else {
+      btn.textContent = "优化图片…";
+      const dataUrl = optimizeImage();
+      if (dataUrl) {
+        mediaData = dataUrl;
+        mediaMime = mediaFile.type;
+      } else {
+        mediaData = await fileToBase64(mediaFile);
+        mediaMime = mediaFile.type;
+      }
+    }
+    btn.textContent = "生成 HTML…";
+    const html = minifyHtml(buildExportHtml(mediaData, mediaMime));
     const blob = new Blob([html], { type: "text/html" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -816,7 +997,7 @@ async function exportCode() {
     console.error("Export failed:", err);
     alert("导出失败：" + err.message);
   } finally {
-    btn.textContent = "导出代码";
+    btn.textContent = origText;
     btn.disabled = !mediaReady;
   }
 }
@@ -827,7 +1008,7 @@ function buildExportHtml(mediaData, mediaMime) {
   const mediaTag = isVideo
     ? `<video id="media" src="${mediaData}" autoplay muted loop playsinline></video>`
     : `<img id="media" src="${mediaData}">`;
-  const cfg = JSON.stringify(config, null, 2);
+  const cfg = JSON.stringify(config);
 
   return `<!DOCTYPE html>
 <html lang="zh-CN">
