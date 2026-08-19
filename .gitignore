@@ -1,0 +1,9 @@
+# IDE
+.vscode/
+.idea/
+
+# Backup
+before.txt
+
+# OS
+.DS_Store

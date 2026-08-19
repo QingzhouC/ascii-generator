@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ASCII 生成器</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <h1>ASCII 生成器</h1>
+      <div class="header-actions">
+        <button id="btn-reset" class="btn" data-tip="一键把所有参数恢复到默认数值">↺ 恢复默认</button>
+        <button id="btn-record" class="btn" disabled data-tip="把当前 ASCII 动画录制成视频文件下载（优先 MP4，不支持时回退 WebM）">⬇ 下载视频</button>
+        <button id="btn-download-image" class="btn" disabled data-tip="把当前 ASCII 效果导出为 PNG 图片（仅导入图片时可用）">⬇ 导出图片</button>
+        <button id="btn-export" class="btn btn-primary" disabled data-tip="导出一个独立的 HTML 文件，内嵌当前媒体和全部参数">导出代码</button>
+      </div>
+    </header>
+
+    <div class="main">
+      <aside class="panel">
+        <!-- 媒体 -->
+        <section class="section">
+          <h2 class="section-title">媒体</h2>
+          <div id="drop-zone" class="drop-zone" data-tip="把图片或视频文件拖进这里，或者点击从电脑选择文件">
+            <div class="drop-icon">📁</div>
+            <p>拖入视频或图片</p>
+            <p class="drop-hint">或点击选择文件</p>
+            <input type="file" id="file-input" accept="image/*,video/*" hidden>
+          </div>
+          <div id="file-info" class="file-info hidden">
+            <span id="file-name"></span>
+            <button id="btn-clear" class="btn btn-small" data-tip="清除当前载入的媒体">清除</button>
+          </div>
+        </section>
+
+        <!-- 图像处理 -->
+        <section class="section">
+          <h2 class="section-title">图像处理</h2>
+          <div class="control-group">
+            <label data-tip="调整图像整体明暗。100 为原始，低于 100 变暗，高于 100 变亮">亮度: <span id="val-brightness">100</span></label>
+            <input type="range" id="ctrl-brightness" min="0" max="200" value="100">
+          </div>
+          <div class="control-group">
+            <label data-tip="增强或减弱明暗差异。100 为原始，越高对比越强">对比度: <span id="val-contrast">100</span></label>
+            <input type="range" id="ctrl-contrast" min="0" max="200" value="100">
+          </div>
+          <div class="control-group">
+            <label data-tip="伽马校正，调整中间色调映射。1.0 为原始，<1 变亮，>1 变暗">伽马: <span id="val-gamma">1.0</span></label>
+            <input type="range" id="ctrl-gamma" min="0.1" max="3.0" step="0.1" value="1.0">
+          </div>
+          <div class="control-group">
+            <label class="checkbox-label" data-tip="反转明暗映射，黑变白、白变黑">
+              <input type="checkbox" id="ctrl-invert" data-tip="反转明暗映射"> 反转
+            </label>
+          </div>
+          <div class="control-group">
+            <label data-tip="抖动算法，在少色 ASCII 中模拟更丰富的渐变">抖动算法:</label>
+            <select id="ctrl-dithering" class="select">
+              <option value="none" selected>无</option>
+              <option value="bayer4x4">Bayer 4×4</option>
+              <option value="floydsteinberg">Floyd-Steinberg</option>
+            </select>
+          </div>
+        </section>
+
+        <!-- 背景识别 -->
+        <section class="section">
+          <h2 class="section-title">背景识别</h2>
+          <div class="control-group">
+            <label data-tip="自动：按平均亮度判断白底/黑底。白色：只抠白底。黑色：只抠黑底">背景模式:</label>
+            <select id="ctrl-bg-mode" class="select">
+              <option value="auto" selected>自动识别</option>
+              <option value="white">白色背景</option>
+              <option value="black">黑色背景</option>
+            </select>
+          </div>
+          <div class="control-group">
+            <label data-tip="白色背景亮度阈值（白色模式/自动白底时生效）">白色阈值: <span id="val-white-threshold">0.92</span></label>
+            <input type="range" id="ctrl-white-threshold" min="0.50" max="0.99" step="0.01" value="0.92">
+          </div>
+          <div class="control-group">
+            <label data-tip="像素与纯白 RGB 距离范围（白色模式/自动白底时生效）">白色距离: <span id="val-white-distance">75</span></label>
+            <input type="range" id="ctrl-white-distance" min="20" max="150" value="75">
+          </div>
+          <div class="control-group">
+            <label data-tip="黑色背景亮度阈值（黑色模式/自动黑底时生效）">黑色阈值: <span id="val-dark-threshold">0.10</span></label>
+            <input type="range" id="ctrl-dark-threshold" min="0.01" max="0.50" step="0.01" value="0.10">
+          </div>
+          <div class="control-group">
+            <label data-tip="像素与纯黑 RGB 距离范围（黑色模式/自动黑底时生效）">黑色距离: <span id="val-dark-distance">75</span></label>
+            <input type="range" id="ctrl-dark-distance" min="20" max="150" value="75">
+          </div>
+        </section>
+
+        <!-- 主体识别 -->
+        <section class="section">
+          <h2 class="section-title">主体识别</h2>
+          <div class="control-group">
+            <label data-tip="主体最低显示强度。越低细节越多，越高画面越干净">主体阈值: <span id="val-wave-threshold">0.12</span></label>
+            <input type="range" id="ctrl-wave-threshold" min="0.05" max="0.40" step="0.01" value="0.12">
+          </div>
+        </section>
+
+        <!-- 字符渲染 -->
+        <section class="section">
+          <h2 class="section-title">字符渲染</h2>
+          <div class="control-group">
+            <label data-tip="预设字符集，按密度从高到低排列">字符集预设:</label>
+            <select id="ctrl-charset-preset" class="select">
+              <option value="custom" selected>自定义</option>
+              <option value="standard">Standard (@%#*+=-:. )</option>
+              <option value="block">Block (█▓▒░ )</option>
+              <option value="braille">Braille (盲文)</option>
+              <option value="minimal">Minimal (#.)</option>
+              <option value="dots">Dots ( .:-=+*#%@)</option>
+            </select>
+          </div>
+          <div class="control-group">
+            <label data-tip="自定义字符集，按密度从轻到重排列">自定义字符 (轻→重):</label>
+            <input type="text" id="ctrl-charset" value=".:-=+*01#%@" maxlength="30">
+          </div>
+          <div class="control-group">
+            <label data-tip="亮度分级数，决定用多少个离散级别匹配字符">色调步长: <span id="val-tonal-steps">10</span></label>
+            <input type="range" id="ctrl-tonal-steps" min="2" max="30" value="10">
+          </div>
+          <div class="control-group">
+            <label data-tip="字体族">字体:</label>
+            <select id="ctrl-font" class="select">
+              <option value='"Courier New", monospace' selected>Courier New</option>
+              <option value="monospace">Monospace</option>
+              <option value='"SF Mono", monospace'>SF Mono</option>
+              <option value='"Fira Code", monospace'>Fira Code</option>
+              <option value="system-ui, sans-serif">System UI</option>
+            </select>
+          </div>
+          <div class="control-group">
+            <label data-tip="字体大小">字体大小: <span id="val-font-size">13</span>px</label>
+            <input type="range" id="ctrl-font-size" min="6" max="32" value="13">
+          </div>
+          <div class="control-group">
+            <label data-tip="每个字符的像素宽度">字符宽: <span id="val-cell-w">13</span>px</label>
+            <input type="range" id="ctrl-cell-w" min="4" max="30" value="13">
+          </div>
+          <div class="control-group">
+            <label data-tip="每个字符的像素高度">字符高: <span id="val-cell-h">15</span>px</label>
+            <input type="range" id="ctrl-cell-h" min="4" max="30" value="15">
+          </div>
+        </section>
+
+        <!-- 颜色与样式 -->
+        <section class="section">
+          <h2 class="section-title">颜色与样式</h2>
+          <div class="control-group">
+            <label data-tip="纯色：所有字符同一颜色。源色：每个字符取原图对应区域平均色">颜色模式:</label>
+            <select id="ctrl-color-mode" class="select">
+              <option value="solid" selected>纯色</option>
+              <option value="source">源色</option>
+            </select>
+          </div>
+          <div class="control-group">
+            <label data-tip="纯色模式下的字符颜色">字符颜色:</label>
+            <input type="color" id="ctrl-char-color" value="#005AEB">
+          </div>
+          <div class="control-group">
+            <label data-tip="背景颜色">背景颜色:</label>
+            <input type="color" id="ctrl-bg-color" value="#ffffff">
+          </div>
+          <div class="control-group">
+            <label data-tip="为字符叠加一层色调">色调:</label>
+            <input type="color" id="ctrl-tint" value="#000000">
+          </div>
+          <div class="control-group">
+            <label data-tip="色调覆盖强度，0 为无色调">色调强度: <span id="val-tint-amount">0</span>%</label>
+            <input type="range" id="ctrl-tint-amount" min="0" max="100" value="0">
+          </div>
+        </section>
+
+        <!-- 平滑与厚度 -->
+        <section class="section">
+          <h2 class="section-title">平滑与厚度</h2>
+          <div class="control-group">
+            <label data-tip="时间域平滑，越高越丝滑但反应慢">时间平滑: <span id="val-smoothing">0.88</span></label>
+            <input type="range" id="ctrl-smoothing" min="0.50" max="0.98" step="0.01" value="0.88">
+          </div>
+          <div class="control-group">
+            <label data-tip="沿坡度叠加的字符层数，越多立体感越强">厚度层数: <span id="val-depth-layers">4</span></label>
+            <input type="range" id="ctrl-depth-layers" min="1" max="8" value="4">
+          </div>
+          <div class="control-group">
+            <label data-tip="横向最大偏移">横向偏移: <span id="val-depth-x">1.1</span></label>
+            <input type="range" id="ctrl-depth-x" min="0" max="3" step="0.1" value="1.1">
+          </div>
+          <div class="control-group">
+            <label data-tip="纵向偏移">纵向偏移: <span id="val-depth-y">1.5</span></label>
+            <input type="range" id="ctrl-depth-y" min="0" max="4" step="0.1" value="1.5">
+          </div>
+        </section>
+
+        <!-- 动画效果 -->
+        <section class="section">
+          <h2 class="section-title">动画效果</h2>
+          <div class="control-group">
+            <label data-tip="动画类型">动画类型:</label>
+            <select id="ctrl-anim-type" class="select">
+              <option value="none" selected>无</option>
+              <option value="fadein">淡入 (Fade In)</option>
+              <option value="scanline">扫描线 (Scanline)</option>
+              <option value="flicker">闪烁 (Flicker)</option>
+              <option value="wave">波浪 (Wave)</option>
+              <option value="glitch">故障 (Glitch)</option>
+            </select>
+          </div>
+          <div class="control-group">
+            <label data-tip="动画速度，1 为标准速度">动画速度: <span id="val-anim-speed">1.0</span>x</label>
+            <input type="range" id="ctrl-anim-speed" min="0.1" max="3.0" step="0.1" value="1.0">
+          </div>
+          <div class="control-group">
+            <label data-tip="揭示效果，控制 ASCII 出现方式">揭示效果:</label>
+            <select id="ctrl-reveal" class="select">
+              <option value="none" selected>无</option>
+              <option value="center">从中心</option>
+              <option value="top">从上到下</option>
+              <option value="edges">从边缘</option>
+            </select>
+          </div>
+        </section>
+
+        <!-- 播放 -->
+        <section class="section">
+          <h2 class="section-title">播放</h2>
+          <div class="control-group">
+            <label data-tip="每秒渲染帧数">帧率 (FPS): <span id="val-fps">30</span></label>
+            <input type="range" id="ctrl-fps" min="1" max="60" value="30">
+          </div>
+          <div class="control-group">
+            <label class="checkbox-label" data-tip="视频播完自动循环">
+              <input type="checkbox" id="ctrl-loop" checked> 循环播放
+            </label>
+          </div>
+          <div class="control-group">
+            <button id="btn-replay" class="btn btn-small" disabled data-tip="从头重新播放">⟳ 重播</button>
+          </div>
+          <div class="control-group">
+            <label data-tip="录制视频时长">录制时长: <span id="val-record-dur">5</span> 秒</label>
+            <select id="ctrl-record-dur" class="select">
+              <option value="3">3 秒</option>
+              <option value="5" selected>5 秒</option>
+              <option value="10">10 秒</option>
+              <option value="15">15 秒</option>
+              <option value="30">30 秒</option>
+            </select>
+          </div>
+        </section>
+      </aside>
+
+      <main class="preview-area">
+        <div class="preview-container" id="preview-container">
+          <canvas id="ascii-canvas"></canvas>
+          <div id="preview-placeholder" class="preview-placeholder">
+            <span>载入媒体以开始</span>
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <video id="source-video" muted playsinline hidden></video>
+  <img id="source-image" hidden>
+
+  <script src="script.js"></script>
+</body>
+</html>
