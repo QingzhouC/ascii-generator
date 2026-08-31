@@ -1218,7 +1218,7 @@ allocInteraction();
 /* ===== 鼠标交互：字符避让 + 空白拖尾 ===== */
 let mouseX=-1e4,mouseY=-1e4,mousePX=-1e4,mousePY=-1e4,mouseIn=false;
 let cellTrail=null,avoidDX=null,avoidDY=null,avoidFade=null;
-const interCfg={radius:60,push:30,decay:0.94};
+const interCfg={radius:90,push:55,decay:0.94};
 function allocInteraction(){
 const s=columns*rows;
 cellTrail=new Float32Array(s);
@@ -1226,8 +1226,8 @@ avoidDX=new Float32Array(s);
 avoidDY=new Float32Array(s);
 avoidFade=new Float32Array(s);
 for(let k=0;k<s;k++)avoidFade[k]=1;
-interCfg.radius=Math.max(40,config.cellWidth*4.5);
-interCfg.push=config.cellWidth*2.4;
+interCfg.radius=Math.max(60,config.cellWidth*7);
+interCfg.push=config.cellWidth*4.2;
 }
 function markTrail(cx,cy){
 if(mousePX<-9000){mousePX=cx;mousePY=cy}
@@ -1274,13 +1274,13 @@ if(d<R&&d>0.001){
 const f=1-d/R;
 const push=f*f*PUSH;
 tx=dx/d*push;ty=dy/d*push;
-tf=1-f*f*0.85;
+tf=1-f*f*0.92;
 }
 }
-const k=(tx===0&&ty===0)?0.2:0.3;
+const k=(tx===0&&ty===0)?0.2:0.35;
 avoidDX[i]+=(tx-avoidDX[i])*k;
 avoidDY[i]+=(ty-avoidDY[i])*k;
-avoidFade[i]+=(tf-avoidFade[i])*0.3;
+avoidFade[i]+=(tf-avoidFade[i])*0.35;
 }
 }
 }
