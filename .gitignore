@@ -10,3 +10,4 @@ before.txt
 
 # Dependencies
 node_modules/
+.e2e/out/

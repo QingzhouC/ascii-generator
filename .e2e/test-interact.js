@@ -134,9 +134,9 @@ const CHROME_PATH = "/Users/qingzhoucai/Library/Caches/ms-playwright/chromium-12
     check("imageExport.trailEffect", brightAfter > brightBefore * 1.5 && brightAfter - brightBefore > 4000,
       { before: brightBefore, after: brightAfter });
 
-    /* 停止交互，让画面恢复 */
+    /* 停止交互，让画面恢复（水波纹需要更长时间衰减） */
     await page.evaluate(() => document.dispatchEvent(new MouseEvent("mouseleave")));
-    await page.waitForTimeout(1500);
+    await page.waitForTimeout(2500);
 
     /* ---- 2. 避让测试：鼠标悬停内容区，字符被推开/减淡（ink 下降） ---- */
     const darkBefore = await ink(page, darkBox);
@@ -147,9 +147,9 @@ const CHROME_PATH = "/Users/qingzhoucai/Library/Caches/ms-playwright/chromium-12
     check("imageExport.avoidEffect", darkAfter < darkBefore * 0.8,
       { before: darkBefore, after: darkAfter });
 
-    /* ---- 3. 恢复测试：鼠标离开后画面复原 ---- */
+    /* ---- 3. 恢复测试：鼠标离开后画面复原（水波衰减需要更长时间） ---- */
     await page.evaluate(() => document.dispatchEvent(new MouseEvent("mouseleave")));
-    await page.waitForTimeout(1500);
+    await page.waitForTimeout(3000);
     const darkRestored = await ink(page, darkBox);
     check("imageExport.restoreEffect", darkRestored > darkBefore * 0.85,
       { before: darkBefore, avoided: darkAfter, restored: darkRestored });
@@ -214,9 +214,9 @@ const CHROME_PATH = "/Users/qingzhoucai/Library/Caches/ms-playwright/chromium-12
     check("videoExport.trailEffect", vTrailState > 0.4 && vChanged > 200,
       { trailState: vTrailState, changedPixels: vChanged });
 
-    /* 拖尾衰减：鼠标离开后 trail 衰减到接近 0 */
+    /* 拖尾衰减：鼠标离开后 trail 衰减到接近 0（水波需更长时间） */
     await vpage.evaluate(() => document.dispatchEvent(new MouseEvent("mouseleave")));
-    await vpage.waitForTimeout(2500);
+    await vpage.waitForTimeout(3000);
     const vTrailDecayed = await vpage.evaluate(({ x, y }) =>
       window.__dbg ? window.__dbg.trail(x, y) : -1, { x: vcx, y: vcy });
     check("videoExport.trailDecay", vTrailDecayed >= 0 && vTrailDecayed < 0.05, vTrailDecayed);

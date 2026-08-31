@@ -1218,16 +1218,44 @@ allocInteraction();
 /* ===== 鼠标交互：字符避让 + 空白拖尾 ===== */
 let mouseX=-1e4,mouseY=-1e4,mousePX=-1e4,mousePY=-1e4,mouseIn=false;
 let cellTrail=null,avoidDX=null,avoidDY=null,avoidFade=null;
-const interCfg={radius:90,push:55,decay:0.94};
+let waveField=null,wavePrev=null;
+const interCfg={radius:90,push:55,decay:0.94,waveDamp:0.975,wavePush:26};
 function allocInteraction(){
 const s=columns*rows;
 cellTrail=new Float32Array(s);
 avoidDX=new Float32Array(s);
 avoidDY=new Float32Array(s);
 avoidFade=new Float32Array(s);
+waveField=new Float32Array(s);
+wavePrev=new Float32Array(s);
 for(let k=0;k<s;k++)avoidFade[k]=1;
 interCfg.radius=Math.max(60,config.cellWidth*7);
 interCfg.push=config.cellWidth*4.2;
+}
+/* 鼠标按压水面：注入负向扰动，形成向外扩散的波环 */
+function injectWave(cx,cy,power){
+if(!waveField)return;
+const ix=Math.floor(cx/config.cellWidth),iy=Math.floor(cy/config.cellHeight);
+for(let dy=-2;dy<=2;dy++){for(let dx=-2;dx<=2;dx++){
+const x=ix+dx,y=iy+dy;
+if(x<0||x>=columns||y<0||y>=rows)continue;
+const d=Math.sqrt(dx*dx+dy*dy);
+const w=Math.max(0,1-d/3)*power;
+waveField[y*columns+x]-=w;
+}}
+}
+/* 经典二维波动方程：波纹向外扩散传播并反弹 */
+function updateWaves(){
+if(!waveField)return;
+const damp=interCfg.waveDamp;
+for(let y=1;y<rows-1;y++){
+const base=y*columns;
+for(let x=1;x<columns-1;x++){
+const i=base+x;
+let v=(waveField[i-1]+waveField[i+1]+waveField[i-columns]+waveField[i+columns])/2-wavePrev[i];
+wavePrev[i]=v*damp;
+}}
+const tmp=waveField;waveField=wavePrev;wavePrev=tmp;
 }
 function markTrail(cx,cy){
 if(mousePX<-9000){mousePX=cx;mousePY=cy}
@@ -1250,7 +1278,18 @@ mousePX=cx;mousePY=cy;
 }
 function onPointerMove(cx,cy){
 if(!cellTrail)return;
-mouseIn=true;mouseX=cx;mouseY=cy;
+mouseIn=true;
+if(mousePX<-9000){mousePX=cx;mousePY=cy}
+const ddx=cx-mousePX,ddy=cy-mousePY;
+const dist=Math.sqrt(ddx*ddx+ddy*ddy);
+mouseX=cx;mouseY=cy;
+/* 沿移动轨迹注入水波：移动越快波越大 */
+const power=Math.min(0.3+dist*0.01,1.4);
+const steps=Math.max(1,Math.floor(dist/Math.min(config.cellWidth,config.cellHeight)));
+for(let k=1;k<=steps;k++){
+const t=k/steps;
+injectWave(mousePX+ddx*t,mousePY+ddy*t,power/steps*1.6);
+}
 markTrail(cx,cy);
 }
 function onPointerLeave(){
@@ -1258,6 +1297,7 @@ mouseIn=false;mouseX=-1e4;mouseY=-1e4;mousePX=-1e4;mousePY=-1e4;
 }
 function updateInteraction(){
 if(!cellTrail)return;
+updateWaves();
 const R=interCfg.radius,PUSH=interCfg.push;
 for(let y=0;y<rows;y++){
 const cyp=y*config.cellHeight+config.cellHeight/2;
@@ -1358,11 +1398,17 @@ if(config.colorMode==="source"){cr=srcR[i];cg=srcG[i];cb=srcB[i]}
 else{cr=sc.r;cg=sc.g;cb=sc.b}
 if(ta>0){cr=lerp(cr,tc.r,ta);cg=lerp(cg,tc.g,ta);cb=lerp(cb,tc.b,ta)}
 if(trail>0){cr=lerp(cr,sc.r,trail);cg=lerp(cg,sc.g,trail);cb=lerp(cb,sc.b,trail)}
+let wox=0,woy=0,wh=0;
+if(x>0&&x<columns-1&&y>0&&y<rows-1){
+wox=(waveField[i+1]-waveField[i-1])*interCfg.wavePush;
+woy=(waveField[i+columns]-waveField[i-columns])*interCfg.wavePush;
+wh=waveField[i];
+}
 const bo=0.16+darkness*0.84;
-const op=Math.min(1,bo+trail*0.7)*anim.opacityMul*ra*avoidFade[i];
+const op=Math.min(1,bo+trail*0.7)*anim.opacityMul*ra*avoidFade[i]*(1+wh*0.5*(1-trail));
 if(op<0.01)continue;
-const bx=x*config.cellWidth+config.cellWidth/2+anim.offsetX+avoidDX[i];
-const by=y*config.cellHeight+config.cellHeight/2+anim.offsetY+avoidDY[i];
+const bx=x*config.cellWidth+config.cellWidth/2+anim.offsetX+avoidDX[i]+wox;
+const by=y*config.cellHeight+config.cellHeight/2+anim.offsetY+avoidDY[i]+woy;
 ctx.fillStyle="rgba("+Math.round(cr)+","+Math.round(cg)+","+Math.round(cb)+","+op.toFixed(3)+")";
 ctx.fillText(char,bx,by);
 }}
@@ -1497,8 +1543,14 @@ let density=0.14+Math.pow(strength,0.65)*0.82+ld*0.32;density=Math.min(density,1
 /* 拖尾单元格绕过密度哈希：鼠标划过的空白必须显现字符 */
 const hash=stableHash(x,y);if(hash>density&&trail<0.05)continue;
 const char=anim.charOverride||getCharacter(strength,x,y);
-const bx=x*config.cellWidth+config.cellWidth/2+avoidDX[i];
-const by=y*config.cellHeight+config.cellHeight/2+avoidDY[i];
+let wox=0,woy=0,wh=0;
+if(x>0&&x<columns-1&&y>0&&y<rows-1){
+wox=(waveField[i+1]-waveField[i-1])*interCfg.wavePush;
+woy=(waveField[i+columns]-waveField[i-columns])*interCfg.wavePush;
+wh=waveField[i];
+}
+const bx=x*config.cellWidth+config.cellWidth/2+avoidDX[i]+wox;
+const by=y*config.cellHeight+config.cellHeight/2+avoidDY[i]+woy;
 const gx=r2-l,gy=b2-t;
 const ns=clamp(strength,0,1);
 const dc=Math.max(1,Math.round(1+ns*(config.depthLayers-1)));
@@ -1511,7 +1563,7 @@ const depth=layer/Math.max(dc-1,1);
 const ox=gx*layer*config.depthX*7+anim.offsetX;
 const oy=layer*config.depthY+gy*layer*4+anim.offsetY;
 const bo=Math.min(0.14+Math.pow(strength,0.62)*0.95,1);
-const op=bo*(1-depth*0.58)*anim.opacityMul*ra*avoidFade[i];
+const op=bo*(1-depth*0.58)*anim.opacityMul*ra*avoidFade[i]*(1+wh*0.5*(1-trail));
 if(op<0.01)continue;
 ctx.fillStyle="rgba("+Math.round(cr)+","+Math.round(cg)+","+Math.round(cb)+","+op.toFixed(3)+")";
 ctx.fillText(char,bx+ox,by+oy);
