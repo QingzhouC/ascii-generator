@@ -113,6 +113,8 @@ let width = 0, height = 0, columns = 0, rows = 0;
 /* 分析数据 */
 let smoothBody, previousBody, edgeMap, motionMap, waveMap, backgroundMask;
 let srcR, srcG, srcB; /* 源色模式用 */
+let srcL, imgShade, imgLevel; /* 图片专用管线用 */
+let imgLut = null;
 
 /* 媒体状态 */
 let mediaType = null;
@@ -150,6 +152,9 @@ function resizeCanvas() {
   srcR = new Uint8ClampedArray(size);
   srcG = new Uint8ClampedArray(size);
   srcB = new Uint8ClampedArray(size);
+  srcL = new Uint8ClampedArray(size);
+  imgShade = new Uint8ClampedArray(size);
+  imgLevel = new Float32Array(size);
 }
 
 function rebuildGrid() {
@@ -164,6 +169,9 @@ function rebuildGrid() {
     srcR.fill(0);
     srcG.fill(0);
     srcB.fill(0);
+    srcL.fill(0);
+    imgShade.fill(0);
+    imgLevel.fill(0);
   }
 }
 
@@ -401,6 +409,146 @@ function floydSteinberg() {
   }
   for (let i = 0; i < size; i++) {
     if (!backgroundMask[i]) waveMap[i] = buf[i];
+  }
+}
+
+/* =========================================================
+   图片专用渲染管线
+   针对静态图片优化：直方图拉伸拉满明暗对比、
+   全覆盖字符映射（不再稀疏）、浮雕光影增强层次、
+   支持抖动算法。视频仍走原有 wave 管线，互不影响。
+========================================================= */
+
+function buildImageLut() {
+  const hist = new Uint32Array(256);
+  for (let i = 0; i < srcL.length; i++) hist[srcL[i]]++;
+  /* 1% 截断的直方图拉伸，把有效亮度范围拉满 0~255 */
+  let lo = 0, hi = 255;
+  const total = srcL.length;
+  let acc = 0;
+  for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc >= total * 0.01) { lo = v; break; } }
+  acc = 0;
+  for (let v = 255; v >= 0; v--) { acc += hist[v]; if (acc >= total * 0.01) { hi = v; break; } }
+  const range = Math.max(1, hi - lo);
+  const lut = new Uint8ClampedArray(256);
+  for (let v = 0; v < 256; v++) lut[v] = Math.round(clamp((v - lo) / range, 0, 1) * 255);
+  imgLut = lut;
+}
+
+function imageAnalyse() {
+  drawCover();
+  const id = sourceCtx.getImageData(0, 0, columns, rows);
+  const px = id.data;
+  for (let i = 0; i < columns * rows; i++) {
+    const pi = i * 4;
+    srcR[i] = px[pi]; srcG[i] = px[pi + 1]; srcB[i] = px[pi + 2];
+  }
+  buildImageLut();
+  for (let i = 0; i < srcL.length; i++) {
+    srcL[i] = imgLut[processPixel((srcR[i] * 0.299 + srcG[i] * 0.587 + srcB[i] * 0.114) | 0)];
+  }
+  /* 浮雕光影：模拟左上光源，增强立体层次 */
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < columns; x++) {
+      const i = y * columns + x;
+      const l = x > 0 ? srcL[i - 1] : srcL[i];
+      const r = x < columns - 1 ? srcL[i + 1] : srcL[i];
+      const t = y > 0 ? srcL[i - columns] : srcL[i];
+      const b = y < rows - 1 ? srcL[i + columns] : srcL[i];
+      const shade = (l + t) * 0.5 - (r + b) * 0.5;
+      imgShade[i] = clamp(srcL[i] + shade * 1.6, 0, 255);
+    }
+  }
+  /* 抖动 pass：输出 darkness 0~1（1=最暗） */
+  const steps = Math.max(2, config.tonalSteps);
+  const size = columns * rows;
+  if (config.dithering === "floydsteinberg") {
+    const buf = new Float32Array(size);
+    for (let i = 0; i < size; i++) buf[i] = 1 - imgShade[i] / 255;
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < columns; x++) {
+        const i = y * columns + x;
+        const old = buf[i];
+        const q = Math.round(old * (steps - 1)) / (steps - 1);
+        const err = old - q;
+        buf[i] = q;
+        if (x + 1 < columns) buf[i + 1] += err * 7 / 16;
+        if (y + 1 < rows) {
+          if (x - 1 >= 0) buf[i + columns - 1] += err * 3 / 16;
+          buf[i + columns] += err * 5 / 16;
+          if (x + 1 < columns) buf[i + columns + 1] += err * 1 / 16;
+        }
+      }
+    }
+    for (let i = 0; i < size; i++) imgLevel[i] = buf[i];
+  } else {
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < columns; x++) {
+        const i = y * columns + x;
+        let dark = 1 - imgShade[i] / 255;
+        if (config.dithering === "bayer4x4") dark = clamp(dark + (bayerThreshold(x, y) - 0.5) / steps, 0, 1);
+        imgLevel[i] = Math.round(dark * (steps - 1)) / (steps - 1);
+      }
+    }
+  }
+}
+
+/* 图片字符映射：全覆盖，暗→重字符，亮→轻字符 */
+function getImageCharacter(darkness, x, y) {
+  const chars = config.charset;
+  if (!chars) return ".";
+  const idx = Math.min(chars.length - 1, Math.max(0, Math.round(darkness * (chars.length - 1))));
+  return chars[idx];
+}
+
+/* 图片专用绘制：每个网格单元都绘制一个字符（全覆盖，明暗即层次） */
+function drawImageAscii(time) {
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = config.bgColor;
+  ctx.fillRect(0, 0, width, height);
+
+  ctx.font = config.fontSize + "px " + config.font;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+
+  const solidColor = hexToRgb(config.charColor);
+  const tintColor = hexToRgb(config.tint);
+  const tintAmt = config.tintAmount / 100;
+
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < columns; x++) {
+      const i = y * columns + x;
+      const darkness = imgLevel[i];
+
+      const revealAlpha = getRevealAlpha(x, y, time);
+      if (revealAlpha <= 0) continue;
+      const anim = getAnimEffect(x, y, 1 - darkness, time);
+      if (anim.opacityMul <= 0) continue;
+
+      const char = anim.charOverride || getImageCharacter(darkness, x, y);
+
+      let cr, cg, cb;
+      if (config.colorMode === "source") {
+        cr = srcR[i]; cg = srcG[i]; cb = srcB[i];
+      } else {
+        cr = solidColor.r; cg = solidColor.g; cb = solidColor.b;
+      }
+      if (tintAmt > 0) {
+        cr = lerp(cr, tintColor.r, tintAmt);
+        cg = lerp(cg, tintColor.g, tintAmt);
+        cb = lerp(cb, tintColor.b, tintAmt);
+      }
+
+      /* 逐字符透明度：暗部浓、亮部淡，形成连续明暗层次 */
+      const baseOpacity = 0.16 + darkness * 0.84;
+      const opacity = baseOpacity * anim.opacityMul * revealAlpha;
+      if (opacity < 0.01) continue;
+
+      const bx = x * config.cellWidth + config.cellWidth / 2 + anim.offsetX;
+      const by = y * config.cellHeight + config.cellHeight / 2 + anim.offsetY;
+      ctx.fillStyle = "rgba(" + Math.round(cr) + "," + Math.round(cg) + "," + Math.round(cb) + "," + opacity.toFixed(3) + ")";
+      ctx.fillText(char, bx, by);
+    }
   }
 }
 
@@ -677,6 +825,12 @@ function stopLoop() {
 
 function renderStatic() {
   if (!mediaReady) return;
+  if (mediaType === "image") {
+    imageAnalyse();
+    /* 静态图：揭示效果用 100 秒让 progress=1 */
+    drawImageAscii(100);
+    return;
+  }
   for (let i = 0; i < 12; i++) analyse();
   /* 静态图：揭示效果用 100 秒让 progress=1 */
   drawAscii(100);
@@ -759,10 +913,14 @@ function onVideoReady() {
 function onImageReady() {
   mediaReady = true;
   mediaLoadTime = 0;
+  /* 图片默认使用源色，让明暗层次更直观（用户仍可手动切换） */
+  config.colorMode = "source";
+  const cm = document.getElementById("ctrl-color-mode");
+  if (cm) cm.value = "source";
   fitContainerToMedia();
   rebuildGrid();
   setPlaceholder(false);
-  document.getElementById("btn-export").disabled = true;
+  document.getElementById("btn-export").disabled = false;
   document.getElementById("btn-replay").disabled = true;
   document.getElementById("btn-record").disabled = true;
   document.getElementById("btn-download-image").disabled = false;
@@ -1038,7 +1196,7 @@ const ctx=canvas.getContext("2d");
 const sourceCanvas=document.createElement("canvas");
 const sourceCtx=sourceCanvas.getContext("2d",{willReadFrequently:true});
 let width=0,height=0,columns=0,rows=0;
-let smoothBody,previousBody,edgeMap,motionMap,waveMap,backgroundMask,srcR,srcG,srcB;
+let smoothBody,previousBody,edgeMap,motionMap,waveMap,backgroundMask,srcR,srcG,srcB,srcL,imgShade,imgLevel,imgLut;
 function hexToRgb(h){h=h.replace("#","");return{r:parseInt(h.substring(0,2),16),g:parseInt(h.substring(2,4),16),b:parseInt(h.substring(4,6),16)}}
 function clamp(v,lo,hi){return Math.max(lo,Math.min(hi,v))}
 function lerp(a,b,t){return a+(b-a)*t}
@@ -1054,7 +1212,81 @@ sourceCanvas.width=columns;sourceCanvas.height=rows;
 const s=columns*rows;
 smoothBody=new Float32Array(s);previousBody=new Float32Array(s);
 edgeMap=new Float32Array(s);motionMap=new Float32Array(s);waveMap=new Float32Array(s);
-backgroundMask=new Uint8Array(s);srcR=new Uint8ClampedArray(s);srcG=new Uint8ClampedArray(s);srcB=new Uint8ClampedArray(s);
+backgroundMask=new Uint8Array(s);srcR=new Uint8ClampedArray(s);srcG=new Uint8ClampedArray(s);srcB=new Uint8ClampedArray(s);srcL=new Uint8ClampedArray(s);imgShade=new Uint8ClampedArray(s);imgLevel=new Float32Array(s);
+}
+function buildImageLut(){
+const hist=new Uint32Array(256);
+for(let i=0;i<srcL.length;i++)hist[srcL[i]]++;
+let lo=0,hi=255;const total=srcL.length;let acc=0;
+for(let v=0;v<256;v++){acc+=hist[v];if(acc>=total*0.01){lo=v;break}}
+acc=0;
+for(let v=255;v>=0;v--){acc+=hist[v];if(acc>=total*0.01){hi=v;break}}
+const range=Math.max(1,hi-lo);
+const lut=new Uint8ClampedArray(256);
+for(let v=0;v<256;v++)lut[v]=Math.round(clamp((v-lo)/range,0,1)*255);
+imgLut=lut;
+}
+function imageAnalyse(){
+drawCover();
+const id=sourceCtx.getImageData(0,0,columns,rows);
+const px=id.data;
+for(let i=0;i<columns*rows;i++){const pi=i*4;srcR[i]=px[pi];srcG[i]=px[pi+1];srcB[i]=px[pi+2]}
+buildImageLut();
+for(let i=0;i<srcL.length;i++)srcL[i]=imgLut[processPixel((srcR[i]*0.299+srcG[i]*0.587+srcB[i]*0.114)|0)];
+for(let y=0;y<rows;y++){for(let x=0;x<columns;x++){
+const i=y*columns+x;
+const l=x>0?srcL[i-1]:srcL[i],r=x<columns-1?srcL[i+1]:srcL[i],t=y>0?srcL[i-columns]:srcL[i],b=y<rows-1?srcL[i+columns]:srcL[i];
+const shade=(l+t)*0.5-(r+b)*0.5;
+imgShade[i]=clamp(srcL[i]+shade*1.6,0,255);
+}}
+const steps=Math.max(2,config.tonalSteps);const size=columns*rows;
+if(config.dithering==="floydsteinberg"){
+const buf=new Float32Array(size);
+for(let i=0;i<size;i++)buf[i]=1-imgShade[i]/255;
+for(let y=0;y<rows;y++){for(let x=0;x<columns;x++){
+const i=y*columns+x;const old=buf[i];const q=Math.round(old*(steps-1))/(steps-1);const err=old-q;buf[i]=q;
+if(x+1<columns)buf[i+1]+=err*7/16;
+if(y+1<rows){if(x-1>=0)buf[i+columns-1]+=err*3/16;buf[i+columns]+=err*5/16;if(x+1<columns)buf[i+columns+1]+=err*1/16}
+}}
+for(let i=0;i<size;i++)imgLevel[i]=buf[i];
+}else{
+for(let y=0;y<rows;y++){for(let x=0;x<columns;x++){
+const i=y*columns+x;let dark=1-imgShade[i]/255;
+if(config.dithering==="bayer4x4")dark=clamp(dark+(bayerThreshold(x,y)-0.5)/steps,0,1);
+imgLevel[i]=Math.round(dark*(steps-1))/(steps-1);
+}}
+}
+}
+function getImageCharacter(darkness){
+const chars=config.charset;if(!chars)return".";
+return chars[Math.min(chars.length-1,Math.max(0,Math.round(darkness*(chars.length-1))))];
+}
+function drawImageAscii(time){
+ctx.clearRect(0,0,width,height);
+ctx.fillStyle=config.bgColor;ctx.fillRect(0,0,width,height);
+ctx.font=config.fontSize+"px "+config.font;
+ctx.textAlign="center";ctx.textBaseline="middle";
+const sc=hexToRgb(config.charColor);
+const tc=hexToRgb(config.tint);
+const ta=config.tintAmount/100;
+for(let y=0;y<rows;y++){for(let x=0;x<columns;x++){
+const i=y*columns+x;
+const darkness=imgLevel[i];
+const ra=getRevealAlpha(x,y,time);if(ra<=0)continue;
+const anim=getAnimEffect(x,y,1-darkness,time);if(anim.opacityMul<=0)continue;
+const char=anim.charOverride||getImageCharacter(darkness);
+let cr,cg,cb;
+if(config.colorMode==="source"){cr=srcR[i];cg=srcG[i];cb=srcB[i]}
+else{cr=sc.r;cg=sc.g;cb=sc.b}
+if(ta>0){cr=lerp(cr,tc.r,ta);cg=lerp(cg,tc.g,ta);cb=lerp(cb,tc.b,ta)}
+const bo=0.16+darkness*0.84;
+const op=bo*anim.opacityMul*ra;
+if(op<0.01)continue;
+const bx=x*config.cellWidth+config.cellWidth/2+anim.offsetX;
+const by=y*config.cellHeight+config.cellHeight/2+anim.offsetY;
+ctx.fillStyle="rgba("+Math.round(cr)+","+Math.round(cg)+","+Math.round(cb)+","+op.toFixed(3)+")";
+ctx.fillText(char,bx,by);
+}}
 }
 function drawCover(){
 const vw=media.videoWidth||media.naturalWidth;
@@ -1215,7 +1447,7 @@ if(ts-lastFrameTime>=frameInterval){lastFrameTime=ts;analyse();drawAscii((ts-sta
 requestAnimationFrame(frame);
 }
 function start(){
-if(${isImage}){for(let i=0;i<12;i++)analyse();drawAscii(100);return}
+if(${isImage}){imageAnalyse();drawImageAscii(100);return}
 requestAnimationFrame(frame);
 }
 if(${isVideo}){media.addEventListener("loadeddata",start,{once:true});media.play().catch(function(){})}

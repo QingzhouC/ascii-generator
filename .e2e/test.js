@@ -1,5 +1,5 @@
 /* E2E test for ASCII Generator HTML export */
-const { chromium } = require("playwright");
+const { chromium } = require("playwright-core");
 const http = require("http");
 const fs = require("fs");
 const path = require("path");

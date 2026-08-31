@@ -1,4 +1,2 @@
-# Qax Memory
-
-This file stores your preferences and patterns learned from our conversations.
-It will be automatically updated as you interact with the assistant.
+# Image Generation
+- 导入内容识别为图片时自动使用新的图片转换参数，强调明暗对比和层次感；视频生成保持现有参数。
