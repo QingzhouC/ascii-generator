@@ -1213,7 +1213,84 @@ const s=columns*rows;
 smoothBody=new Float32Array(s);previousBody=new Float32Array(s);
 edgeMap=new Float32Array(s);motionMap=new Float32Array(s);waveMap=new Float32Array(s);
 backgroundMask=new Uint8Array(s);srcR=new Uint8ClampedArray(s);srcG=new Uint8ClampedArray(s);srcB=new Uint8ClampedArray(s);srcL=new Uint8ClampedArray(s);imgShade=new Uint8ClampedArray(s);imgLevel=new Float32Array(s);
+allocInteraction();
 }
+/* ===== 鼠标交互：字符避让 + 空白拖尾 ===== */
+let mouseX=-1e4,mouseY=-1e4,mousePX=-1e4,mousePY=-1e4,mouseIn=false;
+let cellTrail=null,avoidDX=null,avoidDY=null,avoidFade=null;
+const interCfg={radius:60,push:30,decay:0.94};
+function allocInteraction(){
+const s=columns*rows;
+cellTrail=new Float32Array(s);
+avoidDX=new Float32Array(s);
+avoidDY=new Float32Array(s);
+avoidFade=new Float32Array(s);
+for(let k=0;k<s;k++)avoidFade[k]=1;
+interCfg.radius=Math.max(40,config.cellWidth*4.5);
+interCfg.push=config.cellWidth*2.4;
+}
+function markTrail(cx,cy){
+if(mousePX<-9000){mousePX=cx;mousePY=cy}
+const ddx=cx-mousePX,ddy=cy-mousePY;
+const dist=Math.sqrt(ddx*ddx+ddy*ddy);
+const step=Math.min(config.cellWidth,config.cellHeight)*0.75;
+const n=Math.max(1,Math.ceil(dist/step));
+for(let s=0;s<=n;s++){
+const t=s/n;
+const ix=Math.floor((mousePX+ddx*t)/config.cellWidth);
+const iy=Math.floor((mousePY+ddy*t)/config.cellHeight);
+if(ix>=0&&ix<columns&&iy>=0&&iy<rows){
+const ii=iy*columns+ix;
+if(cellTrail[ii]<1)cellTrail[ii]=1;
+if(ix+1<columns&&cellTrail[ii+1]<0.6)cellTrail[ii+1]=0.6;
+if(iy+1<rows&&cellTrail[ii+columns]<0.6)cellTrail[ii+columns]=0.6;
+}
+}
+mousePX=cx;mousePY=cy;
+}
+function onPointerMove(cx,cy){
+if(!cellTrail)return;
+mouseIn=true;mouseX=cx;mouseY=cy;
+markTrail(cx,cy);
+}
+function onPointerLeave(){
+mouseIn=false;mouseX=-1e4;mouseY=-1e4;mousePX=-1e4;mousePY=-1e4;
+}
+function updateInteraction(){
+if(!cellTrail)return;
+const R=interCfg.radius,PUSH=interCfg.push;
+for(let y=0;y<rows;y++){
+const cyp=y*config.cellHeight+config.cellHeight/2;
+for(let x=0;x<columns;x++){
+const i=y*columns+x;
+const tr=cellTrail[i]*interCfg.decay;
+cellTrail[i]=tr<0.02?0:tr;
+let tx=0,ty=0,tf=1;
+if(mouseIn){
+const cxp=x*config.cellWidth+config.cellWidth/2;
+const dx=cxp-mouseX,dy=cyp-mouseY;
+const d=Math.sqrt(dx*dx+dy*dy);
+if(d<R&&d>0.001){
+const f=1-d/R;
+const push=f*f*PUSH;
+tx=dx/d*push;ty=dy/d*push;
+tf=1-f*f*0.85;
+}
+}
+const k=(tx===0&&ty===0)?0.2:0.3;
+avoidDX[i]+=(tx-avoidDX[i])*k;
+avoidDY[i]+=(ty-avoidDY[i])*k;
+avoidFade[i]+=(tf-avoidFade[i])*0.3;
+}
+}
+}
+window.addEventListener("mousemove",function(e){onPointerMove(e.clientX,e.clientY)});
+document.addEventListener("mouseleave",onPointerLeave);
+window.addEventListener("touchmove",function(e){if(e.touches&&e.touches[0])onPointerMove(e.touches[0].clientX,e.touches[0].clientY)},{passive:true});
+window.addEventListener("touchend",onPointerLeave);
+window.__dbg={grid:function(){return{c:columns,r:rows,cw:config.cellWidth,ch:config.cellHeight}},
+mouse:function(){return{x:mouseX,y:mouseY,in:mouseIn}},
+trail:function(px,py){if(!cellTrail)return -1;const ix=Math.floor(px/config.cellWidth),iy=Math.floor(py/config.cellHeight);if(ix<0||ix>=columns||iy<0||iy>=rows)return -1;return cellTrail[iy*columns+ix]}};
 function buildImageLut(){
 const hist=new Uint32Array(256);
 for(let i=0;i<srcL.length;i++)hist[srcL[i]]++;
@@ -1272,18 +1349,20 @@ const ta=config.tintAmount/100;
 for(let y=0;y<rows;y++){for(let x=0;x<columns;x++){
 const i=y*columns+x;
 const darkness=imgLevel[i];
+const trail=cellTrail[i];
 const ra=getRevealAlpha(x,y,time);if(ra<=0)continue;
 const anim=getAnimEffect(x,y,1-darkness,time);if(anim.opacityMul<=0)continue;
-const char=anim.charOverride||getImageCharacter(darkness);
+const char=anim.charOverride||getImageCharacter(Math.min(1,darkness+trail*0.8));
 let cr,cg,cb;
 if(config.colorMode==="source"){cr=srcR[i];cg=srcG[i];cb=srcB[i]}
 else{cr=sc.r;cg=sc.g;cb=sc.b}
 if(ta>0){cr=lerp(cr,tc.r,ta);cg=lerp(cg,tc.g,ta);cb=lerp(cb,tc.b,ta)}
+if(trail>0){cr=lerp(cr,sc.r,trail);cg=lerp(cg,sc.g,trail);cb=lerp(cb,sc.b,trail)}
 const bo=0.16+darkness*0.84;
-const op=bo*anim.opacityMul*ra;
+const op=Math.min(1,bo+trail*0.7)*anim.opacityMul*ra*avoidFade[i];
 if(op<0.01)continue;
-const bx=x*config.cellWidth+config.cellWidth/2+anim.offsetX;
-const by=y*config.cellHeight+config.cellHeight/2+anim.offsetY;
+const bx=x*config.cellWidth+config.cellWidth/2+anim.offsetX+avoidDX[i];
+const by=y*config.cellHeight+config.cellHeight/2+anim.offsetY+avoidDY[i];
 ctx.fillStyle="rgba("+Math.round(cr)+","+Math.round(cg)+","+Math.round(cb)+","+op.toFixed(3)+")";
 ctx.fillText(char,bx,by);
 }}
@@ -1406,18 +1485,20 @@ const tc=hexToRgb(config.tint);
 const ta=config.tintAmount/100;
 for(let y=0;y<rows;y++){for(let x=0;x<columns;x++){
 const i=y*columns+x;
-if(backgroundMask[i]&&waveMap[i]<config.waveThreshold)continue;
-const strength=waveMap[i];
-if(strength<config.waveThreshold)continue;
+const trail=cellTrail[i];
+if(backgroundMask[i]&&waveMap[i]<config.waveThreshold&&trail<0.03)continue;
+let strength=waveMap[i];
+if(strength<config.waveThreshold){if(trail<0.03)continue;strength=trail*0.9}
 const ra=getRevealAlpha(x,y,time);if(ra<=0)continue;
 const anim=getAnimEffect(x,y,strength,time);if(anim.opacityMul<=0)continue;
 const l=getWaveValue(x-1,y),r2=getWaveValue(x+1,y),t=getWaveValue(x,y-1),b2=getWaveValue(x,y+1);
 const ld=(Math.abs(strength-l)+Math.abs(strength-r2)+Math.abs(strength-t)+Math.abs(strength-b2))/4;
 let density=0.14+Math.pow(strength,0.65)*0.82+ld*0.32;density=Math.min(density,1);
-const hash=stableHash(x,y);if(hash>density)continue;
+/* 拖尾单元格绕过密度哈希：鼠标划过的空白必须显现字符 */
+const hash=stableHash(x,y);if(hash>density&&trail<0.05)continue;
 const char=anim.charOverride||getCharacter(strength,x,y);
-const bx=x*config.cellWidth+config.cellWidth/2;
-const by=y*config.cellHeight+config.cellHeight/2;
+const bx=x*config.cellWidth+config.cellWidth/2+avoidDX[i];
+const by=y*config.cellHeight+config.cellHeight/2+avoidDY[i];
 const gx=r2-l,gy=b2-t;
 const ns=clamp(strength,0,1);
 const dc=Math.max(1,Math.round(1+ns*(config.depthLayers-1)));
@@ -1430,7 +1511,7 @@ const depth=layer/Math.max(dc-1,1);
 const ox=gx*layer*config.depthX*7+anim.offsetX;
 const oy=layer*config.depthY+gy*layer*4+anim.offsetY;
 const bo=Math.min(0.14+Math.pow(strength,0.62)*0.95,1);
-const op=bo*(1-depth*0.58)*anim.opacityMul*ra;
+const op=bo*(1-depth*0.58)*anim.opacityMul*ra*avoidFade[i];
 if(op<0.01)continue;
 ctx.fillStyle="rgba("+Math.round(cr)+","+Math.round(cg)+","+Math.round(cb)+","+op.toFixed(3)+")";
 ctx.fillText(char,bx+ox,by+oy);
@@ -1443,11 +1524,15 @@ let lastFrameTime=0,startTime=0;
 const frameInterval=1000/config.fps;
 function frame(ts){
 if(!startTime)startTime=ts;
-if(ts-lastFrameTime>=frameInterval){lastFrameTime=ts;analyse();drawAscii((ts-startTime)/1000)}
+if(ts-lastFrameTime>=frameInterval){lastFrameTime=ts;analyse();updateInteraction();drawAscii((ts-startTime)/1000)}
 requestAnimationFrame(frame);
 }
+function imageFrame(ts){
+if(ts-lastFrameTime>=frameInterval){lastFrameTime=ts;updateInteraction();drawImageAscii(100)}
+requestAnimationFrame(imageFrame);
+}
 function start(){
-if(${isImage}){imageAnalyse();drawImageAscii(100);return}
+if(${isImage}){imageAnalyse();requestAnimationFrame(imageFrame);return}
 requestAnimationFrame(frame);
 }
 if(${isVideo}){media.addEventListener("loadeddata",start,{once:true});media.play().catch(function(){})}
