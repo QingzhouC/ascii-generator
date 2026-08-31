@@ -154,6 +154,29 @@ const CHROME_PATH = "/Users/qingzhoucai/Library/Caches/ms-playwright/chromium-12
     check("imageExport.restoreEffect", darkRestored > darkBefore * 0.85,
       { before: darkBefore, avoided: darkAfter, restored: darkRestored });
 
+    /* ---- 4. 点击波纹测试：点击触发水波扩散 ---- */
+    const clickWave = await page.evaluate(async () => {
+      const cx = 500, cy = 400;
+      window.dispatchEvent(new MouseEvent("mousedown", { clientX: cx, clientY: cy }));
+      const dbg = window.__dbg;
+      const g = dbg.grid();
+      const sample = (px, py) => {
+        const ix = Math.floor(px / g.cw), iy = Math.floor(py / g.ch);
+        let sum = 0, n = 0;
+        for (let dy = -1; dy <= 1; dy++) { for (let dx = -1; dx <= 1; dx++) {
+          const x = ix + dx, y = iy + dy;
+          if (x < 0 || x >= g.c || y < 0 || y >= g.r) continue;
+          sum += Math.abs(dbg.wave(x, y)); n++;
+        }}
+        return n ? sum / n : 0;
+      };
+      await new Promise(r => setTimeout(r, 500));
+      const near = sample(cx, cy);
+      const far = sample(cx + g.cw * 10, cy);
+      return { near, far };
+    });
+    check("imageExport.clickWave", clickWave.near > 0.05 || clickWave.far > 0.05, clickWave);
+
     await ctx.close();
 
     /* ================= 视频导出：交互测试 ================= */

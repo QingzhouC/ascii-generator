@@ -1295,6 +1295,27 @@ markTrail(cx,cy);
 function onPointerLeave(){
 mouseIn=false;mouseX=-1e4;mouseY=-1e4;mousePX=-1e4;mousePY=-1e4;
 }
+/* 点击水滴：注入强扰动，形成明显扩散波环 */
+function injectDrop(cx,cy){
+if(!waveField)return;
+const ix=Math.floor(cx/config.cellWidth),iy=Math.floor(cy/config.cellHeight);
+const R=4;
+for(let dy=-R;dy<=R;dy++){for(let dx=-R;dx<=R;dx++){
+const x=ix+dx,y=iy+dy;
+if(x<0||x>=columns||y<0||y>=rows)continue;
+const d=Math.sqrt(dx*dx+dy*dy);
+if(d>R)continue;
+/* 环形注入：中心凹、外缘凸，扩散更立体 */
+const ring=Math.abs(d-R*0.45)/(R*0.45);
+const w=(1-d/(R+1))*(1.2+ring*0.6)*2.2;
+waveField[y*columns+x]-=w;
+if(waveField[y*columns+x]<-3)waveField[y*columns+x]=-3;
+}}
+}
+function onPointerDown(cx,cy){
+if(!waveField)return;
+injectDrop(cx,cy);
+}
 function updateInteraction(){
 if(!cellTrail)return;
 updateWaves();
@@ -1326,10 +1347,13 @@ avoidFade[i]+=(tf-avoidFade[i])*0.35;
 }
 window.addEventListener("mousemove",function(e){onPointerMove(e.clientX,e.clientY)});
 document.addEventListener("mouseleave",onPointerLeave);
+window.addEventListener("mousedown",function(e){onPointerDown(e.clientX,e.clientY)});
+window.addEventListener("touchstart",function(e){if(e.touches&&e.touches[0])onPointerDown(e.touches[0].clientX,e.touches[0].clientY)},{passive:true});
 window.addEventListener("touchmove",function(e){if(e.touches&&e.touches[0])onPointerMove(e.touches[0].clientX,e.touches[0].clientY)},{passive:true});
 window.addEventListener("touchend",onPointerLeave);
 window.__dbg={grid:function(){return{c:columns,r:rows,cw:config.cellWidth,ch:config.cellHeight}},
 mouse:function(){return{x:mouseX,y:mouseY,in:mouseIn}},
+wave:function(ix,iy){if(!waveField)return 0;if(ix<0||ix>=columns||iy<0||iy>=rows)return 0;return waveField[iy*columns+ix]},
 trail:function(px,py){if(!cellTrail)return -1;const ix=Math.floor(px/config.cellWidth),iy=Math.floor(py/config.cellHeight);if(ix<0||ix>=columns||iy<0||iy>=rows)return -1;return cellTrail[iy*columns+ix]}};
 function buildImageLut(){
 const hist=new Uint32Array(256);
