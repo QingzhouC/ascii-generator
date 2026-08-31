@@ -154,12 +154,15 @@ const CHROME_PATH = "/Users/qingzhoucai/Library/Caches/ms-playwright/chromium-12
     check("imageExport.restoreEffect", darkRestored > darkBefore * 0.85,
       { before: darkBefore, avoided: darkAfter, restored: darkRestored });
 
-    /* ---- 4. 点击波纹测试：点击触发水波扩散 ---- */
+    /* ---- 4. 点击水滴测试：弹坑剖面 + 次级涟漪扩散 ---- */
     const clickWave = await page.evaluate(async () => {
       const cx = 500, cy = 400;
       window.dispatchEvent(new MouseEvent("mousedown", { clientX: cx, clientY: cy }));
       const dbg = window.__dbg;
       const g = dbg.grid();
+      /* 弹坑剖面：点击瞬间中心深凹（负值），外缘隆起（正值水圈） */
+      const center = dbg.wave(Math.floor(cx / g.cw), Math.floor(cy / g.ch));
+      const rim = dbg.wave(Math.floor(cx / g.cw) + 4, Math.floor(cy / g.ch));
       const sample = (px, py) => {
         const ix = Math.floor(px / g.cw), iy = Math.floor(py / g.ch);
         let sum = 0, n = 0;
@@ -170,12 +173,16 @@ const CHROME_PATH = "/Users/qingzhoucai/Library/Caches/ms-playwright/chromium-12
         }}
         return n ? sum / n : 0;
       };
+      /* 等待 500ms：主涟漪扩散出去，次级小水珠（+160ms/+320ms）也已落下 */
       await new Promise(r => setTimeout(r, 500));
       const near = sample(cx, cy);
       const far = sample(cx + g.cw * 10, cy);
-      return { near, far };
+      return { center, rim, near, far };
     });
-    check("imageExport.clickWave", clickWave.near > 0.05 || clickWave.far > 0.05, clickWave);
+    check("imageExport.clickWave.crater", clickWave.center < -0.5 && clickWave.rim > 0,
+      { center: clickWave.center, rim: clickWave.rim });
+    check("imageExport.clickWave.spread", clickWave.near > 0.05 || clickWave.far > 0.05,
+      { near: clickWave.near, far: clickWave.far });
 
     await ctx.close();
 

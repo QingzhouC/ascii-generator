@@ -1218,7 +1218,7 @@ allocInteraction();
 /* ===== 鼠标交互：字符避让 + 空白拖尾 ===== */
 let mouseX=-1e4,mouseY=-1e4,mousePX=-1e4,mousePY=-1e4,mouseIn=false;
 let cellTrail=null,avoidDX=null,avoidDY=null,avoidFade=null;
-let waveField=null,wavePrev=null;
+let waveField=null,wavePrev=null,dropQueue=[];
 const interCfg={radius:90,push:55,decay:0.94,waveDamp:0.975,wavePush:26};
 function allocInteraction(){
 const s=columns*rows;
@@ -1229,6 +1229,7 @@ avoidFade=new Float32Array(s);
 waveField=new Float32Array(s);
 wavePrev=new Float32Array(s);
 for(let k=0;k<s;k++)avoidFade[k]=1;
+dropQueue=[];
 interCfg.radius=Math.max(60,config.cellWidth*7);
 interCfg.push=config.cellWidth*4.2;
 }
@@ -1295,22 +1296,40 @@ markTrail(cx,cy);
 function onPointerLeave(){
 mouseIn=false;mouseX=-1e4;mouseY=-1e4;mousePX=-1e4;mousePY=-1e4;
 }
-/* 点击水滴：注入强扰动，形成明显扩散波环 */
-function injectDrop(cx,cy){
+/* 点击水滴：模拟水滴砸入水面的弹坑剖面（中心深凹 + 外缘隆起水圈） */
+function injectDropAt(cx,cy,power){
 if(!waveField)return;
 const ix=Math.floor(cx/config.cellWidth),iy=Math.floor(cy/config.cellHeight);
-const R=4;
+const R=5;
 for(let dy=-R;dy<=R;dy++){for(let dx=-R;dx<=R;dx++){
 const x=ix+dx,y=iy+dy;
 if(x<0||x>=columns||y<0||y>=rows)continue;
 const d=Math.sqrt(dx*dx+dy*dy);
 if(d>R)continue;
-/* 环形注入：中心凹、外缘凸，扩散更立体 */
-const ring=Math.abs(d-R*0.45)/(R*0.45);
-const w=(1-d/(R+1))*(1.2+ring*0.6)*2.2;
-waveField[y*columns+x]-=w;
-if(waveField[y*columns+x]<-3)waveField[y*columns+x]=-3;
+const t=d/R;
+/* 弹坑剖面：t<0.5 中心深凹（水体被排开），t>=0.5 外缘隆起（挤出的水圈） */
+let h;
+if(t<0.5)h=-(1-t*2*t*2)*2.6*power;
+else h=Math.sin((t-0.5)*Math.PI)*0.9*power;
+waveField[y*columns+x]+=h;
 }}
+}
+function injectDrop(cx,cy){
+injectDropAt(cx,cy,1);
+/* 水滴回弹溅起的小水珠：稍后落下，产生次级涟漪余波（plip-plop） */
+const now=performance.now();
+dropQueue.push({t:now+160,cx:cx+config.cellWidth*0.7,cy:cy+config.cellHeight*0.4,power:0.42});
+dropQueue.push({t:now+320,cx:cx-config.cellWidth*0.5,cy:cy+config.cellHeight*0.7,power:0.22});
+}
+function processDrops(){
+if(!dropQueue||!dropQueue.length)return;
+const now=performance.now();
+for(let k=dropQueue.length-1;k>=0;k--){
+if(now>=dropQueue[k].t){
+injectDropAt(dropQueue[k].cx,dropQueue[k].cy,dropQueue[k].power);
+dropQueue.splice(k,1);
+}
+}
 }
 function onPointerDown(cx,cy){
 if(!waveField)return;
@@ -1319,6 +1338,7 @@ injectDrop(cx,cy);
 function updateInteraction(){
 if(!cellTrail)return;
 updateWaves();
+processDrops();
 const R=interCfg.radius,PUSH=interCfg.push;
 for(let y=0;y<rows;y++){
 const cyp=y*config.cellHeight+config.cellHeight/2;
