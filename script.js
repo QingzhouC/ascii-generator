@@ -61,7 +61,10 @@ const config = {
 
   /* 播放 */
   fps: 30,
-  loop: true
+  loop: true,
+  flowOnEnd: true,
+  flowStrength: 1.0,
+  twinkleDensity: 12
 };
 
 const DEFAULTS = Object.assign({}, config);
@@ -123,6 +126,8 @@ let mediaName = "";
 let mediaUrl = "";
 let mediaFile = null;
 let mediaLoadTime = 0; /* 揭示效果用 */
+let videoEnded = false; /* 单次播放结束：定格流动感 */
+let flowBlend = 0; /* 定格流动感缓入系数 0→1：切换瞬间不突兀 */
 
 /* =========================================================
    尺寸
@@ -689,6 +694,12 @@ function getRevealAlpha(x, y, time) {
 ========================================================= */
 
 function drawAscii(time) {
+  /* 定格流动感：视频单次播放结束后，画面保持轻微流动（缓入过渡更丝滑） */
+  let flowAmp = 0;
+  if (videoEnded && config.flowOnEnd) {
+    flowBlend = Math.min(1, flowBlend + 0.02);
+    flowAmp = config.flowStrength * (1 - Math.pow(1 - flowBlend, 3));
+  }
   ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = config.bgColor;
   ctx.fillRect(0, 0, width, height);
@@ -739,8 +750,20 @@ function drawAscii(time) {
 
       const char = anim.charOverride || getCharacter(strength, x, y);
 
-      const baseX = x * config.cellWidth + config.cellWidth / 2;
-      const baseY = y * config.cellHeight + config.cellHeight / 2;
+      /* 波光粼粼：定格流动时，小部分字符以各自相位明暗闪烁 */
+      let twinkle = 0;
+      if (flowAmp) {
+        const pick = stableHash(x + 13, y + 7);
+        if (pick < config.twinkleDensity / 100) {
+          const phase = stableHash(x + 31, y + 17) * 6.283;
+          twinkle = Math.sin(time * (2.2 + phase * 0.3) + phase);
+        }
+      }
+
+      const fxD = flowAmp ? Math.sin(time * 0.9 + x * 0.37 + y * 0.21) * 1.4 * flowAmp : 0;
+      const fyD = flowAmp ? Math.cos(time * 0.7 + x * 0.21 + y * 0.34) * 1.4 * flowAmp : 0;
+      const baseX = x * config.cellWidth + config.cellWidth / 2 + fxD;
+      const baseY = y * config.cellHeight + config.cellHeight / 2 + fyD;
 
       const gradientX = right - left;
       const gradientY = bottom - top;
@@ -772,7 +795,8 @@ function drawAscii(time) {
         const offsetY = layer * config.depthY + gradientY * layer * 4 + anim.offsetY;
 
         const baseOpacity = Math.min(0.14 + Math.pow(strength, 0.62) * 0.95, 1);
-        const opacity = baseOpacity * (1 - depth * 0.58) * anim.opacityMul * revealAlpha;
+        let opacity = baseOpacity * (1 - depth * 0.58) * anim.opacityMul * revealAlpha;
+        if (twinkle) opacity = Math.min(1, opacity * (1 + twinkle * 0.6 * flowAmp));
 
         if (opacity < 0.01) continue;
 
@@ -846,6 +870,7 @@ function setPlaceholder(show) {
 
 function clearMedia() {
   stopLoop();
+  videoEnded = false;
   mediaType = null;
   mediaReady = false;
   mediaUrl = "";
@@ -854,6 +879,9 @@ function clearMedia() {
   video.pause();
   video.removeAttribute("src");
   video.load();
+  /* 重置文件选择框：否则再次选择同一个文件不会触发 change 事件 */
+  const fileInput = document.getElementById("file-input");
+  if (fileInput) fileInput.value = "";
   image.removeAttribute("src");
   document.getElementById("file-info").classList.add("hidden");
   document.getElementById("btn-export").disabled = true;
@@ -874,7 +902,7 @@ function loadFile(file) {
   const isVideo = file.type.startsWith("video");
   const isImage = file.type.startsWith("image");
   if (!isVideo && !isImage) {
-    alert("请选择图片或视频文件");
+    alert(lang === "en" ? "Please select an image or video file" : "请选择图片或视频文件");
     return;
   }
   clearMedia();
@@ -933,6 +961,8 @@ function replay() {
     video.play().catch(() => {});
     mediaLoadTime = 0;
     startTime = 0;
+    videoEnded = false;
+    flowBlend = 0;
   } else if (mediaType === "image") {
     mediaLoadTime = 0;
     renderStatic();
@@ -1118,9 +1148,9 @@ async function exportCode() {
   let mediaData, mediaMime;
   try {
     if (mediaType === "video") {
-      btn.textContent = "优化视频 0%";
+      btn.textContent = lang === "en" ? "Optimizing video 0%" : "优化视频 0%";
       const result = await optimizeVideo(p => {
-        btn.textContent = "优化视频 " + Math.round(p * 100) + "%";
+        btn.textContent = (lang === "en" ? "Optimizing video " : "优化视频 ") + Math.round(p * 100) + "%";
       });
       if (result) {
         mediaData = await blobToDataUrl(result.blob);
@@ -1130,7 +1160,7 @@ async function exportCode() {
         mediaMime = mediaFile.type;
       }
     } else {
-      btn.textContent = "优化图片…";
+      btn.textContent = lang === "en" ? "Optimizing image…" : "优化图片…";
       const dataUrl = optimizeImage();
       if (dataUrl) {
         mediaData = dataUrl;
@@ -1140,7 +1170,7 @@ async function exportCode() {
         mediaMime = mediaFile.type;
       }
     }
-    btn.textContent = "生成 HTML…";
+    btn.textContent = lang === "en" ? "Generating HTML…" : "生成 HTML…";
     const html = minifyHtml(buildExportHtml(mediaData, mediaMime));
     const blob = new Blob([html], { type: "text/html" });
     const url = URL.createObjectURL(blob);
@@ -1153,7 +1183,7 @@ async function exportCode() {
     URL.revokeObjectURL(url);
   } catch (err) {
     console.error("Export failed:", err);
-    alert("导出失败：" + err.message);
+    alert((lang === "en" ? "Export failed: " : "导出失败：") + err.message);
   } finally {
     btn.textContent = origText;
     btn.disabled = !mediaReady;
@@ -1164,7 +1194,7 @@ function buildExportHtml(mediaData, mediaMime) {
   const isVideo = mediaMime.startsWith("video");
   const isImage = mediaMime.startsWith("image");
   const mediaTag = isVideo
-    ? `<video id="media" src="${mediaData}" autoplay muted loop playsinline></video>`
+    ? `<video id="media" src="${mediaData}" autoplay muted ${config.loop ? "loop " : ""}playsinline></video>`
     : `<img id="media" src="${mediaData}">`;
   const cfg = JSON.stringify(config);
 
@@ -1196,6 +1226,7 @@ const ctx=canvas.getContext("2d");
 const sourceCanvas=document.createElement("canvas");
 const sourceCtx=sourceCanvas.getContext("2d",{willReadFrequently:true});
 let width=0,height=0,columns=0,rows=0;
+let flowActive=false,flowT=0,flowBlend=0;
 let smoothBody,previousBody,edgeMap,motionMap,waveMap,backgroundMask,srcR,srcG,srcB,srcL,imgShade,imgLevel,imgLut;
 function hexToRgb(h){h=h.replace("#","");return{r:parseInt(h.substring(0,2),16),g:parseInt(h.substring(2,4),16),b:parseInt(h.substring(4,6),16)}}
 function clamp(v,lo,hi){return Math.max(lo,Math.min(hi,v))}
@@ -1280,17 +1311,8 @@ mousePX=cx;mousePY=cy;
 function onPointerMove(cx,cy){
 if(!cellTrail)return;
 mouseIn=true;
-if(mousePX<-9000){mousePX=cx;mousePY=cy}
-const ddx=cx-mousePX,ddy=cy-mousePY;
-const dist=Math.sqrt(ddx*ddx+ddy*ddy);
 mouseX=cx;mouseY=cy;
-/* 沿移动轨迹注入水波：移动越快波越大 */
-const power=Math.min(0.3+dist*0.01,1.4);
-const steps=Math.max(1,Math.floor(dist/Math.min(config.cellWidth,config.cellHeight)));
-for(let k=1;k<=steps;k++){
-const t=k/steps;
-injectWave(mousePX+ddx*t,mousePY+ddy*t,power/steps*1.6);
-}
+/* 移动只产生拖尾+避让，不注入水波：波纹仅在点击时出现 */
 markTrail(cx,cy);
 }
 function onPointerLeave(){
@@ -1374,7 +1396,7 @@ window.addEventListener("touchend",onPointerLeave);
 window.__dbg={grid:function(){return{c:columns,r:rows,cw:config.cellWidth,ch:config.cellHeight}},
 mouse:function(){return{x:mouseX,y:mouseY,in:mouseIn}},
 wave:function(ix,iy){if(!waveField)return 0;if(ix<0||ix>=columns||iy<0||iy>=rows)return 0;return waveField[iy*columns+ix]},
-trail:function(px,py){if(!cellTrail)return -1;const ix=Math.floor(px/config.cellWidth),iy=Math.floor(py/config.cellHeight);if(ix<0||ix>=columns||iy<0||iy>=rows)return -1;return cellTrail[iy*columns+ix]}};
+trail:function(px,py){if(!cellTrail)return -1;const ix=Math.floor(px/config.cellWidth),iy=Math.floor(py/config.cellHeight);if(ix<0||ix>=columns||iy<0||iy>=rows)return -1;return cellTrail[iy*columns+ix]},flow:function(){return flowActive},setFlow:function(v){flowActive=!!v},resetWaves:function(){if(waveField){waveField.fill(0);wavePrev.fill(0)}dropQueue.length=0}};
 function buildImageLut(){
 const hist=new Uint32Array(256);
 for(let i=0;i<srcL.length;i++)hist[srcL[i]]++;
@@ -1430,6 +1452,7 @@ ctx.textAlign="center";ctx.textBaseline="middle";
 const sc=hexToRgb(config.charColor);
 const tc=hexToRgb(config.tint);
 const ta=config.tintAmount/100;
+const fa=flowActive?config.flowStrength*(1-Math.pow(1-flowBlend,3)):0;
 for(let y=0;y<rows;y++){for(let x=0;x<columns;x++){
 const i=y*columns+x;
 const darkness=imgLevel[i];
@@ -1437,6 +1460,12 @@ const trail=cellTrail[i];
 const ra=getRevealAlpha(x,y,time);if(ra<=0)continue;
 const anim=getAnimEffect(x,y,1-darkness,time);if(anim.opacityMul<=0)continue;
 const char=anim.charOverride||getImageCharacter(Math.min(1,darkness+trail*0.8));
+/* 波光粼粼：定格流动时，小部分字符以各自相位明暗闪烁（密度可配） */
+let tw=0;
+if(fa){
+const pk=stableHash(x+13,y+7);
+if(pk<config.twinkleDensity/100){const ph=stableHash(x+31,y+17)*6.283;tw=Math.sin(flowT*(2.2+ph*0.3)+ph)}
+}
 let cr,cg,cb;
 if(config.colorMode==="source"){cr=srcR[i];cg=srcG[i];cb=srcB[i]}
 else{cr=sc.r;cg=sc.g;cb=sc.b}
@@ -1449,10 +1478,12 @@ woy=(waveField[i+columns]-waveField[i-columns])*interCfg.wavePush;
 wh=waveField[i];
 }
 const bo=0.16+darkness*0.84;
-const op=Math.min(1,bo+trail*0.7)*anim.opacityMul*ra*avoidFade[i]*(1+wh*0.5*(1-trail));
+const op=Math.min(1,Math.min(1,bo+trail*0.7)*(1+tw*0.6*fa)*anim.opacityMul*ra*avoidFade[i]*(1+wh*0.5*(1-trail)));
 if(op<0.01)continue;
-const bx=x*config.cellWidth+config.cellWidth/2+anim.offsetX+avoidDX[i]+wox;
-const by=y*config.cellHeight+config.cellHeight/2+anim.offsetY+avoidDY[i]+woy;
+const fx=fa?Math.sin(flowT*0.9+x*0.37+y*0.21)*1.4*fa:0;
+const fy=fa?Math.cos(flowT*0.7+x*0.21+y*0.34)*1.4*fa:0;
+const bx=x*config.cellWidth+config.cellWidth/2+anim.offsetX+avoidDX[i]+wox+fx;
+const by=y*config.cellHeight+config.cellHeight/2+anim.offsetY+avoidDY[i]+woy+fy;
 ctx.fillStyle="rgba("+Math.round(cr)+","+Math.round(cg)+","+Math.round(cb)+","+op.toFixed(3)+")";
 ctx.fillText(char,bx,by);
 }}
@@ -1573,6 +1604,7 @@ ctx.textAlign="center";ctx.textBaseline="middle";
 const sc=hexToRgb(config.charColor);
 const tc=hexToRgb(config.tint);
 const ta=config.tintAmount/100;
+const fa=flowActive?config.flowStrength*(1-Math.pow(1-flowBlend,3)):0;
 for(let y=0;y<rows;y++){for(let x=0;x<columns;x++){
 const i=y*columns+x;
 const trail=cellTrail[i];
@@ -1587,14 +1619,22 @@ let density=0.14+Math.pow(strength,0.65)*0.82+ld*0.32;density=Math.min(density,1
 /* 拖尾单元格绕过密度哈希：鼠标划过的空白必须显现字符 */
 const hash=stableHash(x,y);if(hash>density&&trail<0.05)continue;
 const char=anim.charOverride||getCharacter(strength,x,y);
+/* 波光粼粼：定格流动时，小部分字符以各自相位明暗闪烁（密度可配） */
+let tw=0;
+if(fa){
+const pk=stableHash(x+13,y+7);
+if(pk<config.twinkleDensity/100){const ph=stableHash(x+31,y+17)*6.283;tw=Math.sin(flowT*(2.2+ph*0.3)+ph)}
+}
 let wox=0,woy=0,wh=0;
 if(x>0&&x<columns-1&&y>0&&y<rows-1){
 wox=(waveField[i+1]-waveField[i-1])*interCfg.wavePush;
 woy=(waveField[i+columns]-waveField[i-columns])*interCfg.wavePush;
 wh=waveField[i];
 }
-const bx=x*config.cellWidth+config.cellWidth/2+avoidDX[i]+wox;
-const by=y*config.cellHeight+config.cellHeight/2+avoidDY[i]+woy;
+const fx=fa?Math.sin(flowT*0.9+x*0.37+y*0.21)*1.4*fa:0;
+const fy=fa?Math.cos(flowT*0.7+x*0.21+y*0.34)*1.4*fa:0;
+const bx=x*config.cellWidth+config.cellWidth/2+avoidDX[i]+wox+fx;
+const by=y*config.cellHeight+config.cellHeight/2+avoidDY[i]+woy+fy;
 const gx=r2-l,gy=b2-t;
 const ns=clamp(strength,0,1);
 const dc=Math.max(1,Math.round(1+ns*(config.depthLayers-1)));
@@ -1607,7 +1647,7 @@ const depth=layer/Math.max(dc-1,1);
 const ox=gx*layer*config.depthX*7+anim.offsetX;
 const oy=layer*config.depthY+gy*layer*4+anim.offsetY;
 const bo=Math.min(0.14+Math.pow(strength,0.62)*0.95,1);
-const op=bo*(1-depth*0.58)*anim.opacityMul*ra*avoidFade[i]*(1+wh*0.5*(1-trail));
+const op=Math.min(1,bo*(1-depth*0.58)*anim.opacityMul*ra*avoidFade[i]*(1+wh*0.5*(1-trail))*(1+tw*0.6*fa));
 if(op<0.01)continue;
 ctx.fillStyle="rgba("+Math.round(cr)+","+Math.round(cg)+","+Math.round(cb)+","+op.toFixed(3)+")";
 ctx.fillText(char,bx+ox,by+oy);
@@ -1620,18 +1660,18 @@ let lastFrameTime=0,startTime=0;
 const frameInterval=1000/config.fps;
 function frame(ts){
 if(!startTime)startTime=ts;
-if(ts-lastFrameTime>=frameInterval){lastFrameTime=ts;analyse();updateInteraction();drawAscii((ts-startTime)/1000)}
+if(ts-lastFrameTime>=frameInterval){lastFrameTime=ts;flowT=(ts-startTime)/1000;if(flowActive&&flowBlend<1)flowBlend=Math.min(1,flowBlend+0.02);analyse();updateInteraction();drawAscii((ts-startTime)/1000)}
 requestAnimationFrame(frame);
 }
 function imageFrame(ts){
-if(ts-lastFrameTime>=frameInterval){lastFrameTime=ts;updateInteraction();drawImageAscii(100)}
+if(ts-lastFrameTime>=frameInterval){lastFrameTime=ts;flowT+=frameInterval/1000;if(flowActive&&flowBlend<1)flowBlend=Math.min(1,flowBlend+0.02);updateInteraction();drawImageAscii(100)}
 requestAnimationFrame(imageFrame);
 }
 function start(){
-if(${isImage}){imageAnalyse();requestAnimationFrame(imageFrame);return}
+if(${isImage}){imageAnalyse();if(config.flowOnEnd)flowActive=true;flowBlend=0;requestAnimationFrame(imageFrame);return}
 requestAnimationFrame(frame);
 }
-if(${isVideo}){media.addEventListener("loadeddata",start,{once:true});media.play().catch(function(){})}
+if(${isVideo}){media.addEventListener("loadeddata",start,{once:true});media.addEventListener("ended",function(){if(config.flowOnEnd){flowActive=true;flowBlend=0}});media.play().catch(function(){})}
 else{media.addEventListener("load",start,{once:true})}
 })();
 <\/script>
@@ -1656,7 +1696,7 @@ function pickMime() {
 function recordVideo() {
   if (recording || !mediaReady || mediaType !== "video") return;
   if (!window.MediaRecorder || !canvas.captureStream) {
-    alert("当前浏览器不支持录制视频（需要 Chrome / Edge / Firefox）");
+    alert(lang === "en" ? "Your browser does not support video recording (Chrome / Edge / Firefox required)" : "当前浏览器不支持录制视频（需要 Chrome / Edge / Firefox）");
     return;
   }
   const btn = document.getElementById("btn-record");
@@ -1678,11 +1718,11 @@ function recordVideo() {
     URL.revokeObjectURL(url);
     stream.getTracks().forEach(t => t.stop());
     recording = false;
-    btn.textContent = "⬇ 下载视频";
+    btn.textContent = lang === "en" ? "⬇ Download Video" : "⬇ 下载视频";
     btn.disabled = !mediaReady || mediaType !== "video";
   };
   recording = true;
-  btn.textContent = "⏺ 录制中 " + duration + "s…";
+  btn.textContent = (lang === "en" ? "⏺ Recording " : "⏺ 录制中 ") + duration + "s…";
   btn.disabled = true;
   video.play().catch(() => {});
   recorder.start(100);
@@ -1811,7 +1851,20 @@ function bindControls() {
   loop.addEventListener("change", () => {
     config.loop = loop.checked;
     video.loop = config.loop;
+    /* 单次播放定格后切回循环：从头重新播放并退出定格流动状态 */
+    if (config.loop && videoEnded && mediaType === "video") {
+      videoEnded = false;
+      video.currentTime = 0;
+      video.play().catch(() => {});
+    }
   });
+
+  const flowEnd = document.getElementById("ctrl-flow-on-end");
+  flowEnd.addEventListener("change", () => {
+    config.flowOnEnd = flowEnd.checked;
+  });
+  bindRange("ctrl-flow-strength", "val-flow-strength", "flowStrength", false);
+  bindRange("ctrl-twinkle-density", "val-twinkle-density", "twinkleDensity", true);
 
   /* 按钮 */
   document.getElementById("btn-replay").addEventListener("click", replay);
@@ -1871,7 +1924,9 @@ function resetDefaults() {
     ["ctrl-depth-x", "val-depth-x", "depthX"],
     ["ctrl-depth-y", "val-depth-y", "depthY"],
     ["ctrl-anim-speed", "val-anim-speed", "animSpeed"],
-    ["ctrl-fps", "val-fps", "fps"]
+    ["ctrl-fps", "val-fps", "fps"],
+    ["ctrl-flow-strength", "val-flow-strength", "flowStrength"],
+    ["ctrl-twinkle-density", "val-twinkle-density", "twinkleDensity"]
   ];
 
   for (let i = 0; i < ranges.length; i++) {
@@ -1894,6 +1949,7 @@ function resetDefaults() {
   document.getElementById("ctrl-anim-type").value = config.animType;
   document.getElementById("ctrl-reveal").value = config.reveal;
   document.getElementById("ctrl-loop").checked = config.loop;
+  document.getElementById("ctrl-flow-on-end").checked = config.flowOnEnd;
   video.loop = config.loop;
 
   rebuildGrid();
@@ -1963,6 +2019,300 @@ function initTooltips() {
 bindControls();
 bindFileInput();
 initTooltips();
+
+/* =========================================================
+   i18n：中英文界面切换
+========================================================= */
+
+const I18N_EN = {
+  appName: "ASCII Generator",
+  reset: "↺ Reset",
+  record: "⬇ Download Video",
+  exportImg: "⬇ Export Image",
+  exportCode: "Export Code",
+  secMedia: "Media",
+  dropTitle: "Drop video or image here",
+  dropHint: "or click to select a file",
+  clear: "Clear",
+  secImage: "Image Processing",
+  brightness: "Brightness",
+  contrast: "Contrast",
+  gamma: "Gamma",
+  invert: "Invert",
+  dithering: "Dithering",
+  ditherNone: "None",
+  secBg: "Background Detection",
+  bgMode: "Background Mode",
+  bgAuto: "Auto Detect",
+  bgWhite: "White Background",
+  bgBlack: "Black Background",
+  whiteThreshold: "White Threshold",
+  whiteDistance: "White Distance",
+  darkThreshold: "Dark Threshold",
+  darkDistance: "Dark Distance",
+  secSubject: "Subject Detection",
+  subjectThreshold: "Subject Threshold",
+  secCharset: "Character Rendering",
+  charsetPreset: "Charset Preset",
+  presetCustom: "Custom",
+  brailleOpt: "Braille",
+  customCharset: "Custom Charset",
+  lightToHeavy: "light→heavy",
+  tonalSteps: "Tonal Steps",
+  font: "Font",
+  fontSize: "Font Size",
+  cellW: "Cell Width",
+  cellH: "Cell Height",
+  secColor: "Color & Style",
+  colorMode: "Color Mode",
+  solid: "Solid",
+  source: "Source",
+  charColor: "Character Color",
+  bgColor: "Background Color",
+  tint: "Tint",
+  tintAmount: "Tint Amount",
+  secSmooth: "Smoothing & Depth",
+  smoothing: "Time Smoothing",
+  depthLayers: "Depth Layers",
+  depthX: "Horizontal Offset",
+  depthY: "Vertical Offset",
+  secAnim: "Animation",
+  animType: "Animation Type",
+  animNone: "None",
+  animFadein: "Fade In",
+  animScanline: "Scanline",
+  animFlicker: "Flicker",
+  animWave: "Wave",
+  animGlitch: "Glitch",
+  animSpeed: "Animation Speed",
+  reveal: "Reveal Effect",
+  revealNone: "None",
+  revealCenter: "From Center",
+  revealTop: "Top to Bottom",
+  revealEdges: "From Edges",
+  secPlay: "Playback",
+  fps: "Frame Rate (FPS)",
+  loop: "Loop Playback",
+  flowOnEnd: "Flow on Freeze",
+  flowStrength: "Flow Strength",
+  twinkleDensity: "Twinkle Density",
+  replay: "⟳ Replay",
+  recordDur: "Recording Duration",
+  seconds: "s",
+  sec3: "3 s",
+  sec5: "5 s",
+  sec10: "10 s",
+  sec15: "15 s",
+  sec30: "30 s",
+  placeholder: "Load media to begin",
+  resetTip: "Reset all parameters to defaults",
+  recordTip: "Record the current ASCII animation as a video file (MP4 preferred, falls back to WebM)",
+  exportImgTip: "Export the current ASCII effect as a PNG image (images only)",
+  exportCodeTip: "Export a standalone HTML file with the current media and all parameters embedded",
+  dropTip: "Drag an image or video file here, or click to select from your computer",
+  clearTip: "Remove the loaded media",
+  brightnessTip: "Adjust overall brightness. 100 is original, below 100 darkens, above 100 brightens",
+  contrastTip: "Strengthen or weaken light/dark contrast. 100 is original, higher is stronger",
+  gammaTip: "Gamma correction for midtone mapping. 1.0 is original, <1 brightens, >1 darkens",
+  invertTip: "Invert the light/dark mapping: black becomes white, white becomes black",
+  ditherTip: "Dithering algorithm to simulate richer gradients in low-color ASCII",
+  bgModeTip: "Auto: detect white/black background by average brightness. White: key out white only. Black: key out black only",
+  whiteThresholdTip: "Brightness threshold for white background (white mode / auto white)",
+  whiteDistanceTip: "RGB distance range from pure white (white mode / auto white)",
+  darkThresholdTip: "Brightness threshold for black background (black mode / auto black)",
+  darkDistanceTip: "RGB distance range from pure black (black mode / auto black)",
+  subjectThresholdTip: "Minimum display intensity of the subject. Lower = more detail, higher = cleaner image",
+  charsetPresetTip: "Preset character sets ordered by density from high to low",
+  customCharsetTip: "Custom character set ordered by density from light to heavy",
+  tonalStepsTip: "Number of brightness levels used to map characters",
+  fontTip: "Font family",
+  fontSizeTip: "Font size",
+  cellWTip: "Pixel width of each character cell",
+  cellHTip: "Pixel height of each character cell",
+  colorModeTip: "Solid: all characters in one color. Source: each character takes the average color of its source region",
+  charColorTip: "Character color in solid mode",
+  bgColorTip: "Background color",
+  tintTip: "Overlay a tint on the characters",
+  tintAmountTip: "Tint intensity, 0 = no tint",
+  smoothingTip: "Temporal smoothing. Higher is smoother but slower to react",
+  depthLayersTip: "Number of character layers stacked along gradients. More layers = stronger 3D effect",
+  depthXTip: "Maximum horizontal offset",
+  depthYTip: "Maximum vertical offset",
+  animTypeTip: "Animation type",
+  animSpeedTip: "Animation speed, 1 = standard speed",
+  revealTip: "Reveal effect controlling how ASCII characters appear",
+  fpsTip: "Rendered frames per second",
+  loopTip: "Checked: video loops automatically. Unchecked: plays once and freezes on the last frame",
+  flowOnEndTip: "After a one-shot video freezes on the last frame, keep a gentle flowing feel: characters drift slightly. Also applies to exported HTML",
+  flowStrengthTip: "Intensity of the freeze flow: affects character drift amplitude",
+  twinkleDensityTip: "Proportion of twinkling (shimmering) characters after freeze, 0 = none",
+  replayTip: "Play again from the beginning",
+  recordDurTip: "Recording duration"
+};
+
+const I18N_ZH = {
+  appName: "ASCII 生成器",
+  reset: "↺ 恢复默认",
+  record: "⬇ 下载视频",
+  exportImg: "⬇ 导出图片",
+  exportCode: "导出代码",
+  secMedia: "媒体",
+  dropTitle: "拖入视频或图片",
+  dropHint: "或点击选择文件",
+  clear: "清除",
+  secImage: "图像处理",
+  brightness: "亮度",
+  contrast: "对比度",
+  gamma: "伽马",
+  invert: "反转",
+  dithering: "抖动算法",
+  ditherNone: "无",
+  secBg: "背景识别",
+  bgMode: "背景模式",
+  bgAuto: "自动识别",
+  bgWhite: "白色背景",
+  bgBlack: "黑色背景",
+  whiteThreshold: "白色阈值",
+  whiteDistance: "白色距离",
+  darkThreshold: "黑色阈值",
+  darkDistance: "黑色距离",
+  secSubject: "主体识别",
+  subjectThreshold: "主体阈值",
+  secCharset: "字符渲染",
+  charsetPreset: "字符集预设",
+  presetCustom: "自定义",
+  brailleOpt: "盲文",
+  customCharset: "自定义字符",
+  lightToHeavy: "轻→重",
+  tonalSteps: "色调步长",
+  font: "字体",
+  fontSize: "字体大小",
+  cellW: "字符宽",
+  cellH: "字符高",
+  secColor: "颜色与样式",
+  colorMode: "颜色模式",
+  solid: "纯色",
+  source: "源色",
+  charColor: "字符颜色",
+  bgColor: "背景颜色",
+  tint: "色调",
+  tintAmount: "色调强度",
+  secSmooth: "平滑与厚度",
+  smoothing: "时间平滑",
+  depthLayers: "厚度层数",
+  depthX: "横向偏移",
+  depthY: "纵向偏移",
+  secAnim: "动画效果",
+  animType: "动画类型",
+  animNone: "无",
+  animFadein: "淡入",
+  animScanline: "扫描线",
+  animFlicker: "闪烁",
+  animWave: "波浪",
+  animGlitch: "故障",
+  animSpeed: "动画速度",
+  reveal: "揭示效果",
+  revealNone: "无",
+  revealCenter: "从中心",
+  revealTop: "从上到下",
+  revealEdges: "从边缘",
+  secPlay: "播放",
+  fps: "帧率 (FPS)",
+  loop: "循环播放",
+  flowOnEnd: "定格流动感",
+  flowStrength: "流动强度",
+  twinkleDensity: "闪烁密度",
+  replay: "⟳ 重播",
+  recordDur: "录制时长",
+  seconds: "秒",
+  sec3: "3 秒",
+  sec5: "5 秒",
+  sec10: "10 秒",
+  sec15: "15 秒",
+  sec30: "30 秒",
+  placeholder: "载入媒体以开始",
+  resetTip: "一键把所有参数恢复到默认数值",
+  recordTip: "把当前 ASCII 动画录制成视频文件下载（优先 MP4，不支持时回退 WebM）",
+  exportImgTip: "把当前 ASCII 效果导出为 PNG 图片（仅导入图片时可用）",
+  exportCodeTip: "导出一个独立的 HTML 文件，内嵌当前媒体和全部参数",
+  dropTip: "把图片或视频文件拖进这里，或者点击从电脑选择文件",
+  clearTip: "清除当前载入的媒体",
+  brightnessTip: "调整图像整体明暗。100 为原始，低于 100 变暗，高于 100 变亮",
+  contrastTip: "增强或减弱明暗差异。100 为原始，越高对比越强",
+  gammaTip: "伽马校正，调整中间色调映射。1.0 为原始，<1 变亮，>1 变暗",
+  invertTip: "反转明暗映射，黑变白、白变黑",
+  ditherTip: "抖动算法，在少色 ASCII 中模拟更丰富的渐变",
+  bgModeTip: "自动：按平均亮度判断白底/黑底。白色：只抠白底。黑色：只抠黑底",
+  whiteThresholdTip: "白色背景亮度阈值（白色模式/自动白底时生效）",
+  whiteDistanceTip: "像素与纯白 RGB 距离范围（白色模式/自动白底时生效）",
+  darkThresholdTip: "黑色背景亮度阈值（黑色模式/自动黑底时生效）",
+  darkDistanceTip: "像素与纯黑 RGB 距离范围（黑色模式/自动黑底时生效）",
+  subjectThresholdTip: "主体最低显示强度。越低细节越多，越高画面越干净",
+  charsetPresetTip: "预设字符集，按密度从高到低排列",
+  customCharsetTip: "自定义字符集，按密度从轻到重排列",
+  tonalStepsTip: "亮度分级数，决定用多少个离散级别匹配字符",
+  fontTip: "字体族",
+  fontSizeTip: "字体大小",
+  cellWTip: "每个字符的像素宽度",
+  cellHTip: "每个字符的像素高度",
+  colorModeTip: "纯色：所有字符同一颜色。源色：每个字符取原图对应区域平均色",
+  charColorTip: "纯色模式下的字符颜色",
+  bgColorTip: "背景颜色",
+  tintTip: "为字符叠加一层色调",
+  tintAmountTip: "色调覆盖强度，0 为无色调",
+  smoothingTip: "时间域平滑，越高越丝滑但反应慢",
+  depthLayersTip: "沿坡度叠加的字符层数，越多立体感越强",
+  depthXTip: "横向最大偏移",
+  depthYTip: "纵向偏移",
+  animTypeTip: "动画类型",
+  animSpeedTip: "动画速度，1 为标准速度",
+  revealTip: "揭示效果，控制 ASCII 出现方式",
+  fpsTip: "每秒渲染帧数",
+  loopTip: "勾选：视频播完自动循环。取消勾选：只播放一次，播完定格在最后一帧",
+  flowOnEndTip: "视频播放一次结束、定格在最后一帧时，画面保持轻微的流动感：字符微微漂移。导出的 HTML 同样生效",
+  flowStrengthTip: "定格流动感的强度：影响字符漂移幅度",
+  twinkleDensityTip: "画面定格后闪烁（波光粼粼）的字符比例，0 为不闪烁",
+  replayTip: "从头重新播放",
+  recordDurTip: "录制视频时长"
+};
+
+let lang = "zh";
+
+function applyLanguage(newLang) {
+  lang = newLang;
+  const dict = lang === "en" ? I18N_EN : I18N_ZH;
+  document.documentElement.lang = lang === "en" ? "en" : "zh-CN";
+  document.title = dict.appName;
+  document.querySelectorAll("[data-i18n]").forEach(el => {
+    const key = el.getAttribute("data-i18n");
+    if (dict[key] !== undefined) el.textContent = dict[key];
+  });
+  document.querySelectorAll("[data-i18n-tip]").forEach(el => {
+    const key = el.getAttribute("data-i18n-tip");
+    if (dict[key] !== undefined) el.setAttribute("data-tip", dict[key]);
+  });
+  const langBtn = document.getElementById("btn-lang");
+  if (langBtn) langBtn.textContent = lang === "en" ? "中文" : "EN";
+}
+
+function initLanguage() {
+  const saved = localStorage.getItem("ascii-lang");
+  if (saved === "en" || saved === "zh") {
+    applyLanguage(saved);
+  }
+  document.getElementById("btn-lang").addEventListener("click", () => {
+    const next = lang === "en" ? "zh" : "en";
+    applyLanguage(next);
+    localStorage.setItem("ascii-lang", next);
+  });
+}
+
+initLanguage();
+
+/* 单次播放结束 → 定格流动感 */
+video.addEventListener("ended", () => {
+  if (!config.loop) { videoEnded = true; flowBlend = 0; }
+});
 
 ctx.fillStyle = config.bgColor;
 ctx.fillRect(0, 0, width, height);

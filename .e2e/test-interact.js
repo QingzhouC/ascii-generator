@@ -118,6 +118,10 @@ const CHROME_PATH = "/Users/qingzhoucai/Library/Caches/ms-playwright/chromium-12
 
     check("imageExport.noPageErrors", errs.length === 0, errs);
 
+    /* 图片导出默认开启定格流动感 */
+    const imgFlow = await page.evaluate(() => window.__dbg.flow());
+    check("imageExport.flowActive", imgFlow === true, imgFlow);
+
     const boxes = await scanBoxes(page);
     report.imageBoxes = boxes;
     check("imageExport.boxesFound", !!boxes.dark && !!boxes.bright, boxes);
@@ -133,6 +137,24 @@ const CHROME_PATH = "/Users/qingzhoucai/Library/Caches/ms-playwright/chromium-12
     const brightAfter = await ink(page, brightBox);
     check("imageExport.trailEffect", brightAfter > brightBefore * 1.5 && brightAfter - brightBefore > 4000,
       { before: brightBefore, after: brightAfter });
+
+    /* 移动不产生水波：波纹仅在点击时出现。
+       关闭环境涟漪并清零波场后扫过，波场应保持零 */
+    await page.evaluate(() => window.__dbg.setFlow(false));
+    await page.evaluate(() => window.__dbg.resetWaves());
+    await page.mouse.move(200, 300);
+    await page.mouse.move(1000, 500, { steps: 20 });
+    await page.waitForTimeout(300);
+    const moveWave = await page.evaluate(() => {
+      const dbg = window.__dbg;
+      const g = dbg.grid();
+      let sum = 0, n = 0;
+      for (let y = 0; y < g.r; y++) {
+        for (let x = 0; x < g.c; x++) { sum += Math.abs(dbg.wave(x, y)); n++; }
+      }
+      return n ? sum / n : 0;
+    });
+    check("imageExport.moveNoWave", moveWave < 0.01, moveWave);
 
     /* 停止交互，让画面恢复（水波纹需要更长时间衰减） */
     await page.evaluate(() => document.dispatchEvent(new MouseEvent("mouseleave")));
@@ -261,6 +283,71 @@ const CHROME_PATH = "/Users/qingzhoucai/Library/Caches/ms-playwright/chromium-12
       { before: vdarkBefore, after: vdarkAfter });
 
     await vctx.close();
+
+    /* ================= 单次播放 + 定格流动感测试 ================= */
+    const ogenCtx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    const ogenPage = await ogenCtx.newPage();
+    await ogenPage.goto(`http://localhost:${PORT}/index.html`, { waitUntil: "load" });
+    /* 取消循环播放 → 导出的 HTML 只播放一次 */
+    await ogenPage.evaluate(() => {
+      const loop = document.getElementById("ctrl-loop");
+      loop.checked = false;
+      loop.dispatchEvent(new Event("change"));
+    });
+    const ofi = await ogenPage.$("#file-input");
+    await ofi.setInputFiles(path.join(__dirname, "test_source.mp4"));
+    await ogenPage.waitForFunction(() => {
+      const b = document.getElementById("btn-export");
+      return b && !b.disabled;
+    }, { timeout: 30000 });
+    await ogenPage.waitForTimeout(800);
+    const [odl] = await Promise.all([
+      ogenPage.waitForEvent("download", { timeout: 120000 }),
+      ogenPage.click("#btn-export")
+    ]);
+    const oncePath = path.join(OUT_DIR, "interact-video-once.html");
+    await odl.saveAs(oncePath);
+    await ogenCtx.close();
+
+    const onceCtx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    await onceCtx.route("**/*", route =>
+      route.request().resourceType() === "document" ? route.continue() : route.abort());
+    const oncePage = await onceCtx.newPage();
+    const onceErrs = [];
+    oncePage.on("pageerror", e => onceErrs.push(e.message));
+    await oncePage.goto("file://" + oncePath, { waitUntil: "load" });
+    await oncePage.waitForTimeout(1500);
+
+    /* 视频 loop 属性应关闭 */
+    const onceInfo = await oncePage.evaluate(() => {
+      const m = document.getElementById("media");
+      return { loop: m.loop, duration: m.duration };
+    });
+    check("onceExport.noLoop", onceInfo.loop === false, onceInfo);
+
+    /* 等待播放结束，定格流动感应激活 */
+    await oncePage.waitForFunction(() => {
+      const m = document.getElementById("media");
+      return m.ended;
+    }, { timeout: 30000 }).catch(() => {});
+    const flowOn = await oncePage.evaluate(() => window.__dbg.flow());
+    check("onceExport.flowActive", flowOn === true, flowOn);
+
+    /* 定格画面仍在流动：两帧画面存在像素差异（字符漂移+环境涟漪） */
+    const flowMotion = await oncePage.evaluate(async () => {
+      const canvas = document.getElementById("canvas");
+      const c = canvas.getContext("2d");
+      const snap = () => c.getImageData(0, 0, canvas.width, canvas.height).data;
+      const a = snap();
+      await new Promise(r => setTimeout(r, 400));
+      const b = snap();
+      let diff = 0;
+      for (let i = 0; i < b.length; i += 40) { if (Math.abs(a[i] - b[i]) > 12) diff++; }
+      return diff;
+    });
+    check("onceExport.flowMotion", flowMotion > 20, flowMotion);
+    check("onceExport.noPageErrors", onceErrs.length === 0, onceErrs);
+    await onceCtx.close();
 
     console.log("=== SUMMARY: " + (failed === 0 ? "ALL PASS" : failed + " FAILED") + " ===");
     fs.writeFileSync(path.join(OUT_DIR, "interact-report.json"), JSON.stringify(report, null, 2));
